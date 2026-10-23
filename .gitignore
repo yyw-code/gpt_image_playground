@@ -13,5 +13,7 @@ src-tauri/data-dir*
 src-tauri/dev-downloads/
 
 # 本地协作资料
-/AGENTS.md
 /.codex/
+
+# 本地 IDE 配置
+/.idea/
