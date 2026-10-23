@@ -6,6 +6,7 @@ import { customProviderSupportsNativeTransparentBackground } from '../lib/custom
 import { hasActiveDataOperations, trackDataTransfer } from '../lib/dataOperations'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
 import { isTauri } from '../lib/platform'
+import { IS_SITE_MODE } from '../lib/siteMode'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
@@ -160,6 +161,7 @@ function isProfileApiProxyEligible(settings: AppSettings, profile: ApiProfile) {
   return !isAsyncCustomProvider(customProvider)
 }
 
+/** 编辑用户生成参数；站点预置连接由部署端维护，保留个人密钥输入和 Agent 配置。 */
 export default function SettingsModal() {
   const showSettings = useStore((s) => s.showSettings)
   const settingsTabRequest = useStore((s) => s.settingsTabRequest)
@@ -244,6 +246,7 @@ export default function SettingsModal() {
   const activeProfile = draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? getActiveApiProfile(draft)
   const activePresetDescription = getPresetProfileDescription(activeProfile.id)
   const activeProfileLocked = isPresetProfileLocked(activeProfile.id)
+  const siteConnectionManaged = IS_SITE_MODE && presetProfileIds.has(activeProfile.id)
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal'
   const activeCustomProvider = getCustomProviderDefinition(draft, activeProfile.provider)
@@ -1264,10 +1267,15 @@ export default function SettingsModal() {
             
             {activeTab === 'api' && (
               <div className="space-y-4">
+                {IS_SITE_MODE && !presetConfigOnly && (
+                  <p className="rounded-xl bg-blue-50 px-3.5 py-3 text-sm leading-6 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300">
+                    本站暂未提供预置接口，请先手动填写可用的接口和个人密钥。当前尚不支持自动读取主站密钥。
+                  </p>
+                )}
                 <div>
                   <div className="mb-1.5 flex items-center gap-1.5">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">当前配置</span>
-                    <span className="relative inline-flex">
+                    {!IS_SITE_MODE && <span className="relative inline-flex">
                       <button
                         type="button"
                         onClick={() => confirmCopyProfileImportUrl(activeProfile)}
@@ -1292,7 +1300,7 @@ export default function SettingsModal() {
                       <ViewportTooltip visible={profileImportUrlTooltipVisible} className="whitespace-nowrap">
                         复制导入 URL
                       </ViewportTooltip>
-                    </span>
+                    </span>}
                     {!presetConfigOnly && <span className="relative inline-flex">
                       <button
                         type="button"
@@ -1411,7 +1419,7 @@ export default function SettingsModal() {
                                 </div>
                                 
                                 <div className="flex shrink-0 items-center gap-1">
-                                  <button
+                                  {!IS_SITE_MODE && <button
                                     type="button"
                                     onClick={(e) => {
                                       e.preventDefault()
@@ -1423,7 +1431,7 @@ export default function SettingsModal() {
                                     title="复制导入 URL"
                                   >
                                     <LinkIcon className="h-3.5 w-3.5" />
-                                  </button>
+                                  </button>}
                                   {!presetConfigOnly && (isDefaultProfile || draft.profiles.length > 1) && (
                                     <TooltipButton
                                       tooltip={isPresetProfile && presetDeletionPrevented ? '预置配置不可删除' : '删除配置'}
@@ -1464,7 +1472,7 @@ export default function SettingsModal() {
                 </div>
 
               {/* 1. 配置名称 */}
-              <label className="block">
+              {!siteConnectionManaged && <label className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">配置名称</span>
                 <input
                   value={activeProfile.name}
@@ -1474,10 +1482,10 @@ export default function SettingsModal() {
                   disabled={activeProfileLocked}
                   className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
-              </label>
+              </label>}
 
               {/* 2. 服务商类型 */}
-              <div className="block">
+              {!siteConnectionManaged && <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">服务商类型</span>
                 <Select
                   value={activeProfile.provider}
@@ -1487,10 +1495,10 @@ export default function SettingsModal() {
                   disabled={presetConfigOnly || activeProfileLocked}
                   className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
-              </div>
+              </div>}
 
               {/* 3. API URL */}
-              {activeProviderUsesApiUrl && (
+              {!siteConnectionManaged && activeProviderUsesApiUrl && (
                 <label className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">API URL</span>
@@ -1517,7 +1525,7 @@ export default function SettingsModal() {
               )}
 
               {/* 4. API 代理（紧跟 URL） */}
-              {apiProxyAvailable && activeProviderIsOpenAICompatible && !activeCustomProviderAsync && (
+              {!siteConnectionManaged && apiProxyAvailable && activeProviderIsOpenAICompatible && !activeCustomProviderAsync && (
                 <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">API 代理</span>
@@ -1575,12 +1583,12 @@ export default function SettingsModal() {
                   </button>
                 </div>
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code>
+                  {IS_SITE_MODE ? '请使用你本人在本站创建的密钥；当前需要手动填写。' : <>支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code></>}
                 </div>
               </div>
 
               {/* 6. API 接口（Images/Responses） */}
-              {activeProfile.provider === 'openai' && (
+              {!siteConnectionManaged && activeProfile.provider === 'openai' && (
                 <div className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API 接口</span>
                   <Select
@@ -1631,7 +1639,7 @@ export default function SettingsModal() {
                     <>Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。</>
                   )}
                   多个模型以逗号分隔，可在首页的模型参数中切换。
-                  {activeProfile.provider === 'openai' && (
+                  {!IS_SITE_MODE && activeProfile.provider === 'openai' && (
                     <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
                   )}
                 </div>
@@ -1652,7 +1660,7 @@ export default function SettingsModal() {
                   <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
                     Responses API 的 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">image_generation</code> 工具需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。
                     留空时不发送工具模型 ID，保持 API 默认值。
-                    支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?imageGenerationModel=</code>。
+                    {!IS_SITE_MODE && <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?imageGenerationModel=</code>。</>}
                   </div>
                 </label>
               )}
@@ -1675,7 +1683,8 @@ export default function SettingsModal() {
                     </div>
                   </div>
                   <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    用于指导模型在执行任务时的思考深度，更高的档位会使模型花费更长时间进行思考，有助于提升 Agent 模式下模型完成复杂任务的能力。并非所有模型都支持全部推理强度。支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?reasoningEffort=high</code>。
+                    用于指导模型在执行任务时的思考深度，更高的档位会使模型花费更长时间进行思考，有助于提升 Agent 模式下模型完成复杂任务的能力。并非所有模型都支持全部推理强度。
+                    {!IS_SITE_MODE && <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?reasoningEffort=high</code>。</>}
                   </div>
                 </div>
               )}
@@ -1792,7 +1801,8 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    开启后应用 Codex CLI 实际支持的参数。支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">codexCli=true</code>。
+                    开启后应用 Codex CLI 实际支持的参数。
+                    {!IS_SITE_MODE && <>支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">codexCli=true</code>。</>}
                   </div>
                 </div>
               )}

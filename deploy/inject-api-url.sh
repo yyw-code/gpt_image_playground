@@ -1,5 +1,11 @@
 #!/bin/sh
 
+# 只注入规范化的布尔值，防止将任意环境变量内容拼入前端脚本。
+SITE_MODE_ENABLED=true
+if [ "$SITE_MODE" = "false" ]; then
+    SITE_MODE_ENABLED=false
+fi
+
 # 用环境变量替换前端默认 API URL。显式传入空字符串时保留为空。
 if [ "${DEFAULT_API_URL+x}" != "x" ]; then
     DEFAULT_API_URL=${API_URL:-https://api.openai.com/v1}
@@ -87,6 +93,7 @@ DEFAULT_MONO_FONT_ESCAPED=$(escape_sed_replacement "$(escape_js_string "$DEFAULT
 BUILTIN_FONT_SOURCE_ESCAPED=$(escape_sed_replacement "$(escape_js_string "$BUILTIN_FONT_SOURCE")")
 
 # 查找所有 js 文件并将占位符替换为运行时配置
+find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_SITE_MODE_PLACEHOLDER__|$SITE_MODE_ENABLED|g" {} +
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DEFAULT_API_URL_PLACEHOLDER__|$DEFAULT_API_URL_ESCAPED|g" {} +
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_API_PROXY_AVAILABLE_PLACEHOLDER__|$API_PROXY_AVAILABLE|g" {} +
 find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_API_PROXY_LOCKED_PLACEHOLDER__|$API_PROXY_LOCKED|g" {} +

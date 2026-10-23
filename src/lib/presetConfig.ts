@@ -1,6 +1,7 @@
 import type { ApiProfile, AppSettings, CustomProviderDefinition, PresetAgentConfig, PresetConfig } from '../types'
 import { getPresetAgentSettings, normalizeSettings } from './apiProfiles'
 import { readRuntimeEnv } from './runtimeEnv'
+import { IS_SITE_MODE } from './siteMode'
 
 const RAW_SHOW_PRESET_CONFIG_ONLY = readRuntimeEnv(import.meta.env.VITE_SHOW_PRESET_CONFIG_ONLY)
 const SHOW_PRESET_CONFIG_ONLY = (RAW_SHOW_PRESET_CONFIG_ONLY || readRuntimeEnv(import.meta.env.VITE_SHOW_DEFAULT_CONFIG_ONLY)) === 'true'
@@ -65,16 +66,18 @@ export function isPresetProvider(id: string) {
   return presetProviders.some((provider) => provider.id === id)
 }
 
+/** 站点有预置配置时，仅展示部署提供的配置；未配置时保留手动接入能力。 */
 export function isPresetConfigOnlyEnabled() {
-  return SHOW_PRESET_CONFIG_ONLY && presetProfiles.length > 0
+  return (IS_SITE_MODE || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
 }
 
 export function isPresetConfigParamsLocked() {
   return LOCK_PRESET_CONFIG_PARAMS && presetProfiles.length > 0
 }
 
+/** 阻止删除部署要求保留的预置配置，站点模式自动保留。 */
 export function isPresetConfigDeletionPrevented() {
-  return (PREVENT_PRESET_CONFIG_DELETION || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
+  return (IS_SITE_MODE || PREVENT_PRESET_CONFIG_DELETION || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
 }
 
 export function isPresetProfileLocked(id: string) {
@@ -85,8 +88,9 @@ export function isPresetAgentFieldLocked(field: keyof PresetAgentConfig) {
   return isPresetConfigParamsLocked() && presetAgent?.[field] !== undefined
 }
 
+/** 站点供应商定义由部署端管理；普通模式沿用完整参数锁定选项。 */
 export function isPresetProviderLocked(id: string) {
-  return isPresetConfigParamsLocked() && isPresetProvider(id)
+  return (IS_SITE_MODE || isPresetConfigParamsLocked()) && isPresetProvider(id)
 }
 
 export function isPresetProviderDeletionPrevented(id: string, profiles: ApiProfile[]) {
@@ -95,6 +99,7 @@ export function isPresetProviderDeletionPrevented(id: string, profiles: ApiProfi
   return profiles.some((profile) => profile.provider === id && isPresetProfileLocked(profile.id))
 }
 
+/** 应用部署策略；站点锁定连接地址与供应商，保留用户密钥、模型参数及旧配置数据。 */
 export function enforcePresetConfigPolicy(
   settings: AppSettings,
   options: { dismissedPresetProviderIds?: string[] } = {},
@@ -112,6 +117,7 @@ export function enforcePresetConfigPolicy(
     if (!preset) return profile.isDefault ? { ...profile, isDefault: undefined } : profile
     return {
       ...(paramsLocked ? preset : profile),
+      ...(IS_SITE_MODE ? { baseUrl: preset.baseUrl, apiMode: preset.apiMode, apiProxy: preset.apiProxy } : {}),
       apiKey: profile.apiKey,
       selectedModel: profile.selectedModel,
       provider: paramsLocked || presetConfigOnly ? preset.provider : profile.provider,
@@ -125,7 +131,7 @@ export function enforcePresetConfigPolicy(
   }
   const customProviders = settings.customProviders.filter((provider) => !dismissedProviderIds.has(provider.id)).map((provider) => {
     const preset = presetProvidersById.get(provider.id)
-    return preset && paramsLocked ? preset : provider
+    return preset && (paramsLocked || IS_SITE_MODE) ? preset : provider
   })
   for (const provider of presetProviders) {
     if (dismissedProviderIds.has(provider.id)) continue

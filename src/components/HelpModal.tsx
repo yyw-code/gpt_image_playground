@@ -4,6 +4,7 @@ import type { AppMode } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { isTauri } from '../lib/platform'
+import { IS_SITE_MODE } from '../lib/siteMode'
 import { LinkIcon } from './icons'
 
 interface HelpModalProps {
@@ -22,6 +23,7 @@ function useIsMobile() {
   return isMobile
 }
 
+/** 展示当前模式的操作说明；站点版使用个人密钥指引，保留 Agent 与画廊操作指南。 */
 export default function HelpModal({ appMode, isFavoriteCollectionOverview = false, onClose }: HelpModalProps) {
   const isMobile = useIsMobile()
   const modalRef = useRef<HTMLDivElement>(null)
@@ -168,7 +170,15 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
               </section>
             </>
           )}
-          <section>
+          {IS_SITE_MODE ? <section>
+            <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200">开始创作</h4>
+            <ul className="list-disc pl-4 space-y-2">
+              <li>在设置中选择可用配置，填写你本人在本站创建的 API Key。当前需要手动填写密钥。</li>
+              <li>画廊支持输入提示词、添加参考图和遮罩编辑，生成结果可下载或收藏。</li>
+              <li>Agent 支持连续对话和修改图片，需要选择支持相应能力的配置。</li>
+              <li>历史记录保存在当前浏览器，不会自动同步到其他设备。</li>
+            </ul>
+          </section> : <section>
             <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
               <LinkIcon className="w-4 h-4 text-gray-400 dark:text-gray-500" />
               导入配置链接
@@ -183,7 +193,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
                 <li>打开带有配置参数的<strong className="text-blue-500 dark:text-blue-400 font-medium">导入链接</strong>时，页面会先提示导入，确认后才会导入。</li>
               )}
             </ul>
-          </section>
+          </section>}
         </div>
 
         <div className="pt-4 border-t border-gray-200 dark:border-white/[0.08] flex justify-center">

@@ -4,6 +4,7 @@ import { setUpdateModalOpen, useReleaseUpdates } from '../hooks/useReleaseUpdate
 import { useTooltip } from '../hooks/useTooltip'
 import { detectOs } from '../lib/announcements'
 import { isTauri } from '../lib/platform'
+import { IS_SITE_MODE } from '../lib/siteMode'
 import { RELEASES_PAGE_URL, shouldShowUpdate } from '../lib/releaseUpdates'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import ViewportTooltip from './ViewportTooltip'
@@ -26,6 +27,7 @@ function isInstalledPwa() {
   return window.matchMedia('(display-mode: standalone)').matches || nav.standalone === true
 }
 
+/** 显示画廊与 Agent 导航；站点模式隐藏安装入口和上游更新提示。 */
 export default function Header() {
   const appMode = useStore((s) => s.appMode)
   const setAppMode = useStore((s) => s.setAppMode)
@@ -99,7 +101,7 @@ export default function Header() {
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault()
-      setInstallPrompt(event as BeforeInstallPromptEvent)
+      if (!IS_SITE_MODE) setInstallPrompt(event as BeforeInstallPromptEvent)
       setIsPwaInstalled(false)
     }
 
@@ -182,7 +184,7 @@ export default function Header() {
                 </a>
               )}
               {/* 透明伪元素把点击区域扩大到 32px 以上，外观不变 */}
-              {hasUpdate && latestRelease && (
+              {!IS_SITE_MODE && hasUpdate && latestRelease && (
                 <button
                   type="button"
                   onClick={() => setUpdateModalOpen(true)}
@@ -261,7 +263,7 @@ export default function Header() {
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {/* 客户端本身就是安装版，不显示 PWA 安装入口 */}
-            {!isTauri && !isPwaInstalled && (
+            {!IS_SITE_MODE && !isTauri && !isPwaInstalled && (
               <div
                 className="relative"
                 {...installTooltip.handlers}
@@ -282,7 +284,7 @@ export default function Header() {
               </div>
             )}
             {/* 窄屏时按钮区空间不足，同样不显示 */}
-            {SHOW_CLIENT_DOWNLOAD && (
+            {!IS_SITE_MODE && SHOW_CLIENT_DOWNLOAD && (
               <div
                 className="relative hidden sm:block"
                 {...clientTooltip.handlers}

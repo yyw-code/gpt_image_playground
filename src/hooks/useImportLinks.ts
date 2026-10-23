@@ -7,6 +7,7 @@ import { restoreExplicitPresetConfig, useStore } from '../store'
 import { normalizeSettings } from '../lib/apiProfiles'
 import { describeImportLink, handledImportLinks, parseImportLink } from '../lib/importLink'
 import { isTauri } from '../lib/platform'
+import { IS_SITE_MODE } from '../lib/siteMode'
 import { buildSettingsFromUrlParams, getExplicitUrlSettingsIds } from '../lib/urlSettings'
 import ImportLinkDiff from '../components/ImportLinkDiff'
 
@@ -45,8 +46,10 @@ function waitIdle() {
 /**
  * 提示导入链接中的配置。input 为链接文本，或网页版启动时已从地址栏取出的参数。
  * opened 表示用户主动打开的链接（deep link 或网页链接），每次都提示；剪贴板中的同一条链接本次运行只提示一次
+ * 站点模式不接受分享链接配置，防止覆盖部署连接或通过链接携带密钥。
  */
 export function promptImportLink(input: string | URLSearchParams, opened = false) {
+  if (IS_SITE_MODE) return
   const link = typeof input === 'string' ? input.trim() : ''
   if (!opened && handledImportLinks.has(link)) return
   const params = typeof input === 'string' ? parseImportLink(link) : input

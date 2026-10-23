@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { checkForUpdates, setUpdateModalOpen, useReleaseUpdates } from '../../hooks/useReleaseUpdates'
 import { compareVersions, MANUAL_CHECK_MIN_INTERVAL_MS } from '../../lib/releaseUpdates'
 import { useStore } from '../../store'
+import { IS_SITE_MODE } from '../../lib/siteMode'
 import { ChevronRightIcon, ExternalLinkIcon, GithubIcon, HistoryIcon, RefreshIcon } from '../icons'
 
 interface AboutRowProps {
@@ -60,12 +61,14 @@ function AboutCard({ icon, title, children }: { icon: ReactNode; title: string; 
 const CHEVRON = <ChevronRightIcon className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" />
 const EXTERNAL = <ExternalLinkIcon className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" />
 
+/** 展示来源与第三方许可；站点模式隐藏上游更新、赞助和反馈入口。 */
 export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLicenses: () => void }) {
   const showToast = useStore((s) => s.showToast)
   const latest = useReleaseUpdates((s) => s.releases[0])
   const checkError = useReleaseUpdates((s) => s.checkError)
   const [checking, setChecking] = useState(false)
 
+  /** 手动查询上游版本，并报告网络失败；站点模式不展示此操作。 */
   const handleCheck = async () => {
     setChecking(true)
     try {
@@ -142,7 +145,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
             </a>
           </p>
           <p data-selectable-text className="mt-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-            本项目的成长离不开每一位用户的使用、反馈、贡献与支持，感谢一路有你。
+            {IS_SITE_MODE ? '本站基于 GPT Image Playground（MIT 协议）修改，原作者为 CookSleep。' : '本项目的成长离不开每一位用户的使用、反馈、贡献与支持，感谢一路有你。'}
           </p>
         </div>
         <a
@@ -157,7 +160,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
         </a>
       </div>
 
-      <AboutCard icon={<RefreshIcon className="h-4 w-4" />} title="版本与更新">
+      {!IS_SITE_MODE && <AboutCard icon={<RefreshIcon className="h-4 w-4" />} title="版本与更新">
         {hasUpdate && !checking ? (
           <AboutRow
             highlight
@@ -188,9 +191,9 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
           onClick={() => setUpdateModalOpen(true)}
           right={CHEVRON}
         />
-      </AboutCard>
+      </AboutCard>}
 
-      <AboutCard
+      {!IS_SITE_MODE && <AboutCard
         icon={(
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
@@ -218,7 +221,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
           href="https://www.ifdian.net/a/cooksleep"
           right={EXTERNAL}
         />
-      </AboutCard>
+      </AboutCard>}
 
       <div className="overflow-hidden rounded-2xl border border-transparent bg-black/[0.04] dark:bg-white/[0.06]">
         <AboutRow

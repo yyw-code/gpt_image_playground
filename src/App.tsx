@@ -33,12 +33,14 @@ import { showStartupNotices, type NoticeSection } from './components/startupNoti
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 import { takeDataDirNotice } from './lib/dbTauri'
 import { isTauri } from './lib/platform'
+import { IS_SITE_MODE } from './lib/siteMode'
 import { setSaveToDefaultDir } from './lib/saveFile'
 import { setTauriLogEnabled } from './lib/tauriLog'
 import { getTauriStorageLoadError } from './lib/tauriStorage'
 
 let defaultConfigImportStarted = false
 
+/** 初始化工作台；站点模式停用上游推广、公告和版本更新弹窗。 */
 export default function App() {
   const appMode = useStore((s) => s.appMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
@@ -52,7 +54,7 @@ export default function App() {
   useGlobalClickSuppression()
   useCloseConfirm()
   useSaveLocationPrompt()
-  useAutoUpdateCheck(autoCheckUpdate)
+  useAutoUpdateCheck(!IS_SITE_MODE && autoCheckUpdate)
   // 运行中的链接导入要等启动时的预置配置写入完，否则会被启动流程覆盖
   useImportLinks(startupImportDone)
 
@@ -179,7 +181,7 @@ export default function App() {
         // 不等待用户确认，客户端的剪贴板和 deep link 监听依赖它
         setStartupImportDone(true)
         // 预置配置写入后再提示，确认框按导入前的实际设置描述变化
-        if (importParams) promptImportLink(importParams, true)
+        if (importParams && !IS_SITE_MODE) promptImportLink(importParams, true)
       })
   }, [])
 
@@ -211,12 +213,12 @@ export default function App() {
       <DetailModal />
       <Lightbox />
       <SettingsModal />
-      <UpdateModal />
+      {!IS_SITE_MODE && <UpdateModal />}
       <DataProgressDialog />
       <ConfirmDialog />
-      <SupportPromptModal />
+      {!IS_SITE_MODE && <SupportPromptModal />}
       {/* 等启动时的任务加载和预置配置导入完成，再按图片数量等条件筛选公告 */}
-      <AnnouncementModal ready={startupImportDone} />
+      {!IS_SITE_MODE && <AnnouncementModal ready={startupImportDone} />}
       <FavoriteCollectionPickerModal />
       <ManageCollectionsModal />
       <Toast />

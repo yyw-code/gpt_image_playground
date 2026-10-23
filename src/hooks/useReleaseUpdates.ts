@@ -4,6 +4,7 @@ import type { ReleaseCache, ReleaseInfo } from '../lib/releaseUpdates'
 import { getReleasesApiUrl, isReleaseCacheFresh, RELEASE_CACHE_TTL_MS, mergeReleasePage, parseReleaseCache, parseReleasePage } from '../lib/releaseUpdates'
 import { readLocal, writeLocal } from '../lib/localRecord'
 import { apiFetch } from '../lib/platform'
+import { IS_SITE_MODE } from '../lib/siteMode'
 
 const CACHE_KEY = 'release-cache-v1'
 const IGNORED_KEY = 'ignored-release-version'
@@ -44,8 +45,9 @@ function applyCache(cache: ReleaseCache) {
 
 let checking: Promise<ReleaseInfo | undefined> | null = null
 
-/** 获取最新的 Release 列表并返回最新版本；缓存在 ttl 内直接复用（默认一小时）。同时发起的检查共用一次请求 */
+/** 获取上游版本（默认缓存一小时），并发共用请求；站点模式返回空结果且不访问网络。 */
 export function checkForUpdates(ttl = RELEASE_CACHE_TTL_MS) {
+  if (IS_SITE_MODE) return Promise.resolve(undefined)
   checking ??= (async () => {
     const cache = parseReleaseCache(readLocal(CACHE_KEY))
     if (isReleaseCacheFresh(cache, Date.now(), ttl)) {
@@ -71,8 +73,9 @@ export function checkForUpdates(ttl = RELEASE_CACHE_TTL_MS) {
 
 let loadingMore: Promise<void> | null = null
 
-/** 加载下一页更早的版本，并写回缓存；某页过滤后没有新增版本时继续加载，直到有新增或没有更多 */
+/** 加载并缓存更早的版本，直到有新增或没有更多；站点模式不查询上游。 */
 export function loadOlderReleases() {
+  if (IS_SITE_MODE) return Promise.resolve()
   loadingMore ??= (async () => {
     // 追加的页沿用第一页的获取时间，缓存整体按第一页过期
     const fetchedAt = parseReleaseCache(readLocal(CACHE_KEY))?.fetchedAt ?? Date.now()
@@ -96,16 +99,17 @@ export function ignoreReleaseVersion(version: string) {
   useReleaseUpdates.setState({ ignoredVersion: version })
 }
 
+/** 设置更新弹窗状态；站点模式始终关闭，避免旧状态或其他入口重新打开。 */
 export function setUpdateModalOpen(modalOpen: boolean) {
-  useReleaseUpdates.setState({ modalOpen })
+  useReleaseUpdates.setState({ modalOpen: !IS_SITE_MODE && modalOpen })
 }
 
 let autoChecked = false
 
-/** 启动时检查一次更新（开发模式下 StrictMode 会执行两次 effect，用模块级标记保证只检查一次） */
+/** 启动时按个人设置检查一次上游更新，站点模式即使恢复旧设置也不检查。 */
 export function useAutoUpdateCheck(enabled: boolean) {
   useEffect(() => {
-    if (!enabled || autoChecked) return
+    if (IS_SITE_MODE || !enabled || autoChecked) return
     autoChecked = true
     checkForUpdates().catch((err) => console.warn('检查更新失败：', err))
   }, [enabled])
