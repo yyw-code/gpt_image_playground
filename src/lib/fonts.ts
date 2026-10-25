@@ -10,7 +10,7 @@ export type BuiltinFontSource = 'local' | 'cdn'
 const FONT_MODES: FontMode[] = ['default', 'builtin', 'system', 'custom']
 
 // 内置字体的加载来源由部署决定：local 为随应用分发的字体文件，其他值（含未设置）为公共 CDN
-const BUILTIN_FONT_SOURCE: BuiltinFontSource = readRuntimeEnv(import.meta.env.VITE_BUILTIN_FONT_SOURCE).toLowerCase() === 'local' ? 'local' : 'cdn'
+const BUILTIN_FONT_SOURCE: BuiltinFontSource = readRuntimeEnv(import.meta.env.VITE_BUILTIN_FONT_SOURCE, 'VITE_BUILTIN_FONT_SOURCE').toLowerCase() === 'local' ? 'local' : 'cdn'
 
 // 内置字体的族名与 CDN 切片 CSS 保持一致，两种加载来源共用同一套 CSS 变量
 const FONT_SLOTS = {
@@ -19,7 +19,7 @@ const FONT_SLOTS = {
     fallback: "'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif",
     cssVar: '--font-ui-sans',
     cdnCss: 'https://cdn.jsdelivr.net/npm/@lobehub/webfont-harmony-sans-sc@1.0.0/css/index.css',
-    deployValue: readRuntimeEnv(import.meta.env.VITE_DEFAULT_UI_FONT),
+    deployValue: readRuntimeEnv(import.meta.env.VITE_DEFAULT_UI_FONT, 'VITE_DEFAULT_UI_FONT'),
     loadLocal: () => import('../../fonts/harmonyos-sans-sc.css'),
   },
   mono: {
@@ -27,7 +27,7 @@ const FONT_SLOTS = {
     fallback: "'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
     cssVar: '--font-mono',
     cdnCss: 'https://fontsapi.zeoseven.com/442/main/result.css',
-    deployValue: readRuntimeEnv(import.meta.env.VITE_DEFAULT_MONO_FONT),
+    deployValue: readRuntimeEnv(import.meta.env.VITE_DEFAULT_MONO_FONT, 'VITE_DEFAULT_MONO_FONT'),
     loadLocal: () => import('../../fonts/maple-mono-nf-cn.css'),
   },
 }

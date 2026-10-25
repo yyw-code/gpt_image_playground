@@ -94,14 +94,16 @@ export function readClientDevProxyConfig(): DevProxyConfig | null {
   )
 }
 
+/** 根据本次部署配置判断网页代理是否可用；客户端仍直接访问接口。 */
 export function isApiProxyAvailable(proxyConfig: DevProxyConfig | null = readClientDevProxyConfig()): boolean {
   // 客户端不受跨域限制，代理选项隐藏且不生效；已保存的代理设置保持不变，导回网页版时仍然有效
   if (isTauri) return false
-  return readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE) === 'true' || Boolean(proxyConfig?.enabled)
+  return readRuntimeEnv(import.meta.env.VITE_API_PROXY_AVAILABLE, 'VITE_API_PROXY_AVAILABLE') === 'true' || Boolean(proxyConfig?.enabled)
 }
 
+/** 仅在代理已启用时，应用部署端要求强制使用代理的设置。 */
 export function isApiProxyLocked(proxyConfig: DevProxyConfig | null = readClientDevProxyConfig()): boolean {
-  return readRuntimeEnv(import.meta.env.VITE_API_PROXY_LOCKED) === 'true' && isApiProxyAvailable(proxyConfig)
+  return readRuntimeEnv(import.meta.env.VITE_API_PROXY_LOCKED, 'VITE_API_PROXY_LOCKED') === 'true' && isApiProxyAvailable(proxyConfig)
 }
 
 export function shouldUseApiProxy(apiProxy: boolean, proxyConfig: DevProxyConfig | null = readClientDevProxyConfig()): boolean {

@@ -9,6 +9,7 @@ import { installBrowserBehaviorGuards, installExternalLinkHandler, isTauri } fro
 import { installTauriLog } from './lib/tauriLog'
 import { installTauriStorageFlush, loadTauriStorage } from './lib/tauriStorage'
 import { installMobileViewportGuards } from './lib/viewport'
+import { assertRuntimeConfigLoaded } from './lib/runtimeEnv'
 
 installMobileViewportGuards()
 
@@ -24,19 +25,21 @@ if (isTauri) {
 if (!isTauri && 'serviceWorker' in navigator) {
   if (import.meta.env.PROD) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((error) => {
+      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, { updateViaCache: 'none' }).catch((error) => {
         console.error('Service worker registration failed:', error)
       })
     })
   } else {
     navigator.serviceWorker.getRegistrations().then((registrations) => {
-      registrations.forEach((registration) => registration.unregister())
+      const scope = new URL(import.meta.env.BASE_URL, window.location.href).href
+      registrations.filter((registration) => registration.scope === scope).forEach((registration) => registration.unregister())
     })
   }
 }
 
-// store 在模块加载时就会同步完成 persist hydration，因此 App（以及它引入的 store）必须在客户端设置读入内存之后才动态加载
+/** 校验 Docker 站点配置并加载工作台；客户端先读存储，避免 store 提前 hydration 覆盖用户设置。 */
 async function start() {
+  if (!isTauri && import.meta.env.VITE_DOCKER_DEPLOYMENT === 'true') assertRuntimeConfigLoaded()
   if (isTauri) {
     await loadTauriStorage()
     void installTauriStorageFlush().catch((err) => console.error('注册关闭前保存失败：', err))
@@ -49,4 +52,10 @@ async function start() {
   )
 }
 
-void start()
+void start().catch((error) => {
+  console.error('工作台启动失败：', error)
+  const message = document.createElement('p')
+  message.className = 'p-6 text-center text-red-600'
+  message.textContent = '工作台启动失败，请刷新重试或联系管理员检查站点配置。'
+  document.getElementById('root')?.replaceChildren(message)
+})

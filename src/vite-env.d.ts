@@ -3,6 +3,10 @@
 declare const __APP_VERSION__: string
 declare const __DEV_PROXY_CONFIG__: unknown
 
+interface Window {
+  __GPT_IMAGE_RUNTIME_CONFIG__?: Record<string, string>
+}
+
 interface ImportMetaEnv {
   readonly VITE_SITE_MODE?: string
   readonly VITE_DEFAULT_API_URL?: string

@@ -1,5 +1,7 @@
 #!/bin/sh
 
+set -e
+
 # 只注入规范化的布尔值，防止将任意环境变量内容拼入前端脚本。
 SITE_MODE_ENABLED=true
 if [ "$SITE_MODE" = "false" ]; then
@@ -40,12 +42,9 @@ if [ "$PREVENT_PRESET_CONFIG_DELETION" = "true" ]; then
     PRESET_CONFIG_DELETION_PREVENTED=true
 fi
 
-escape_sed_replacement() {
-    printf '%s' "$1" | sed 's/[&|\\]/\\&/g'
-}
-
-escape_js_string() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+# 将公共部署值编码到独立脚本，避免引号、换行或中文破坏 JavaScript 语法。
+encode_runtime_value() {
+    printf '%s' "$1" | base64 | tr -d '\n'
 }
 
 DEFAULT_API_URL_TRIMMED=$(printf '%s' "$DEFAULT_API_URL" | sed 's/^[[:space:]]*//')
@@ -85,26 +84,29 @@ case "$DEFAULT_API_URL_TRIMMED" in
         fi
         ;;
 esac
-DEFAULT_API_URL_ESCAPED=$(escape_sed_replacement "$(escape_js_string "$DEFAULT_API_URL")")
-# 默认字体：builtin / system，其他值视为字体名称；留空时前端按 builtin 处理
-DEFAULT_UI_FONT_ESCAPED=$(escape_sed_replacement "$(escape_js_string "$DEFAULT_UI_FONT")")
-DEFAULT_MONO_FONT_ESCAPED=$(escape_sed_replacement "$(escape_js_string "$DEFAULT_MONO_FONT")")
-# 内置字体加载来源：local（本站）/ cdn（公共 CDN）；留空时为 cdn
-BUILTIN_FONT_SOURCE_ESCAPED=$(escape_sed_replacement "$(escape_js_string "$BUILTIN_FONT_SOURCE")")
 
-# 查找所有 js 文件并将占位符替换为运行时配置
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_SITE_MODE_PLACEHOLDER__|$SITE_MODE_ENABLED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DEFAULT_API_URL_PLACEHOLDER__|$DEFAULT_API_URL_ESCAPED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_API_PROXY_AVAILABLE_PLACEHOLDER__|$API_PROXY_AVAILABLE|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_API_PROXY_LOCKED_PLACEHOLDER__|$API_PROXY_LOCKED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DOCKER_DEPLOYMENT_PLACEHOLDER__|true|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DOCKER_LEGACY_API_URL_USED_PLACEHOLDER__|$DOCKER_LEGACY_API_URL_USED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_SHOW_PRESET_CONFIG_ONLY_PLACEHOLDER__|$PRESET_CONFIG_ONLY|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_LOCK_PRESET_CONFIG_PARAMS_PLACEHOLDER__|$PRESET_CONFIG_PARAMS_LOCKED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_PREVENT_PRESET_CONFIG_DELETION_PLACEHOLDER__|$PRESET_CONFIG_DELETION_PREVENTED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DEFAULT_UI_FONT_PLACEHOLDER__|$DEFAULT_UI_FONT_ESCAPED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_DEFAULT_MONO_FONT_PLACEHOLDER__|$DEFAULT_MONO_FONT_ESCAPED|g" {} +
-find /usr/share/nginx/html/assets -type f -name "*.js" -exec sed -i "s|__VITE_BUILTIN_FONT_SOURCE_PLACEHOLDER__|$BUILTIN_FONT_SOURCE_ESCAPED|g" {} +
+# 只重写不缓存的运行时配置，不再改动 Vite 带 hash 的代码资源；先完整写入再原子替换。
+RUNTIME_CONFIG_TMP=$(mktemp /usr/share/nginx/html/.runtime-config.XXXXXX)
+trap 'rm -f "$RUNTIME_CONFIG_TMP"' 0
+cat > "$RUNTIME_CONFIG_TMP" <<EOF
+// 公共部署配置；Base64 仅用于安全编码，不用于隐藏密钥。
+window.__GPT_IMAGE_RUNTIME_CONFIG__ = Object.fromEntries(Object.entries({
+  VITE_SITE_MODE: "$(encode_runtime_value "$SITE_MODE_ENABLED")",
+  VITE_DEFAULT_API_URL: "$(encode_runtime_value "$DEFAULT_API_URL")",
+  VITE_API_PROXY_AVAILABLE: "$(encode_runtime_value "$API_PROXY_AVAILABLE")",
+  VITE_API_PROXY_LOCKED: "$(encode_runtime_value "$API_PROXY_LOCKED")",
+  VITE_DOCKER_DEPLOYMENT: "$(encode_runtime_value true)",
+  VITE_DOCKER_LEGACY_API_URL_USED: "$(encode_runtime_value "$DOCKER_LEGACY_API_URL_USED")",
+  VITE_SHOW_PRESET_CONFIG_ONLY: "$(encode_runtime_value "$PRESET_CONFIG_ONLY")",
+  VITE_LOCK_PRESET_CONFIG_PARAMS: "$(encode_runtime_value "$PRESET_CONFIG_PARAMS_LOCKED")",
+  VITE_PREVENT_PRESET_CONFIG_DELETION: "$(encode_runtime_value "$PRESET_CONFIG_DELETION_PREVENTED")",
+  VITE_DEFAULT_UI_FONT: "$(encode_runtime_value "$DEFAULT_UI_FONT")",
+  VITE_DEFAULT_MONO_FONT: "$(encode_runtime_value "$DEFAULT_MONO_FONT")",
+  VITE_BUILTIN_FONT_SOURCE: "$(encode_runtime_value "$BUILTIN_FONT_SOURCE")"
+}).map(([name, value]) => [name, new TextDecoder().decode(Uint8Array.from(atob(value), (char) => char.charCodeAt(0)))]))
+EOF
+chmod 644 "$RUNTIME_CONFIG_TMP"
+mv -f "$RUNTIME_CONFIG_TMP" /usr/share/nginx/html/runtime-config.js
 
 # 检查是否启用了 API 代理
 if [ "$ENABLE_API_PROXY" != "true" ]; then

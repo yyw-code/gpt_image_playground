@@ -3,10 +3,10 @@ import { getPresetAgentSettings, normalizeSettings } from './apiProfiles'
 import { readRuntimeEnv } from './runtimeEnv'
 import { IS_SITE_MODE } from './siteMode'
 
-const RAW_SHOW_PRESET_CONFIG_ONLY = readRuntimeEnv(import.meta.env.VITE_SHOW_PRESET_CONFIG_ONLY)
-const SHOW_PRESET_CONFIG_ONLY = (RAW_SHOW_PRESET_CONFIG_ONLY || readRuntimeEnv(import.meta.env.VITE_SHOW_DEFAULT_CONFIG_ONLY)) === 'true'
-const LOCK_PRESET_CONFIG_PARAMS = readRuntimeEnv(import.meta.env.VITE_LOCK_PRESET_CONFIG_PARAMS) === 'true'
-const PREVENT_PRESET_CONFIG_DELETION = readRuntimeEnv(import.meta.env.VITE_PREVENT_PRESET_CONFIG_DELETION) === 'true'
+const RAW_SHOW_PRESET_CONFIG_ONLY = readRuntimeEnv(import.meta.env.VITE_SHOW_PRESET_CONFIG_ONLY, 'VITE_SHOW_PRESET_CONFIG_ONLY')
+const SHOW_PRESET_CONFIG_ONLY = (RAW_SHOW_PRESET_CONFIG_ONLY || readRuntimeEnv(import.meta.env.VITE_SHOW_DEFAULT_CONFIG_ONLY, 'VITE_SHOW_DEFAULT_CONFIG_ONLY')) === 'true'
+const LOCK_PRESET_CONFIG_PARAMS = readRuntimeEnv(import.meta.env.VITE_LOCK_PRESET_CONFIG_PARAMS, 'VITE_LOCK_PRESET_CONFIG_PARAMS') === 'true'
+const PREVENT_PRESET_CONFIG_DELETION = readRuntimeEnv(import.meta.env.VITE_PREVENT_PRESET_CONFIG_DELETION, 'VITE_PREVENT_PRESET_CONFIG_DELETION') === 'true'
 
 let presetProfiles: ApiProfile[] = []
 let presetProviders: CustomProviderDefinition[] = []
