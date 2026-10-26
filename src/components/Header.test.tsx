@@ -57,10 +57,10 @@ function renderHeader() {
 }
 
 describe('站点顶栏', () => {
-  it('显示本站品牌及 PWA，隐藏客户端和上游新版本提示，并保留桌面/移动 Agent 切换', () => {
+  it('显示本站品牌，隐藏安装、客户端和上游新版本提示，并保留桌面/移动 Agent 切换', () => {
     const container = renderHeader()
     expect(container.querySelector('[aria-label="下载客户端"]')).toBeNull()
-    expect(container.querySelector('[aria-label="安装为应用"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="安装为应用"]')).toBeNull()
     expect(container.textContent).toContain('NorthByteHub 图片工作台')
     expect(container.querySelector('a[href*="github.com"]')).toBeNull()
     expect(container.textContent).not.toContain('NEW')
@@ -79,7 +79,18 @@ describe('站点顶栏', () => {
     expect(container.textContent).toContain('NEW')
   })
 
-  it('站点模式可以调用浏览器的 PWA 安装提示', async () => {
+  it('站点模式收到浏览器安装事件后仍隐藏安装入口', () => {
+    const container = renderHeader()
+    const prompt = vi.fn()
+    const event = new Event('beforeinstallprompt', { cancelable: true })
+    Object.assign(event, { prompt })
+    act(() => { window.dispatchEvent(event) })
+    expect(container.querySelector('[aria-label="安装为应用"]')).toBeNull()
+    expect(prompt).not.toHaveBeenCalled()
+  })
+
+  it('非站点模式可以调用浏览器的 PWA 安装提示', async () => {
+    mocks.siteMode.IS_SITE_MODE = false
     const container = renderHeader()
     const prompt = vi.fn().mockResolvedValue(undefined)
     const event = new Event('beforeinstallprompt', { cancelable: true })

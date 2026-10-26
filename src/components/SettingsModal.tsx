@@ -63,6 +63,7 @@ import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, ExportIcon, 
 import { TooltipButton } from './TooltipButton'
 import GeneralSettingsTab from './settings/GeneralSettingsTab'
 import AgentSettingsTab from './settings/AgentSettingsTab'
+import ApiModelFields from './settings/ApiModelFields'
 import FontLicensesModal from './settings/FontLicensesModal'
 import CustomProviderModal from './settings/CustomProviderModal'
 import ProfileImportUrlModal, { type CopyImportUrlOptions } from './settings/ProfileImportUrlModal'
@@ -1619,8 +1620,8 @@ export default function SettingsModal() {
                       updateActiveProfile({ apiMode }, true)
                     }}
                     options={[
-                      { label: 'Images API (/v1/images)', value: 'images' },
-                      { label: 'Responses API (/v1/responses)', value: 'responses' },
+                      { label: '直接生图（Images API）', value: 'images' },
+                      { label: '对话与 Agent（Responses API）', value: 'responses' },
                     ]}
                     disabled={activeProfileLocked}
                     className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
@@ -1631,60 +1632,14 @@ export default function SettingsModal() {
                 </div>
               )}
 
-              {/* 7. 模型 ID（紧跟接口选择） */}
-              <label className="block">
-                <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  模型 ID
-                </span>
-                <input
-                  value={activeProfile.model}
-                  onChange={(e) => updateActiveProfile({ model: e.target.value })}
-                  onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
-                  type="text"
-                  disabled={activeProfileLocked}
-                  placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_MODEL : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
-                  className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
-                />
-                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  {activeProfile.provider === 'fal' ? (
-                    <>
-                      当前支持：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">openai/gpt-image-2</code>{' '}
-                      <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">openai/gpt-image-2.5/sunburst</code>{' '}
-                      <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">openai/gpt-image-2.5/flare</code>。
-                    </>
-                  ) : activeCustomProvider ? (
-                    <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
-                  ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (
-                    <>Responses API 需要使用支持 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">image_generation</code> 工具的文本模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_RESPONSES_MODEL}</code>。</>
-                  ) : (
-                    <>Images API 需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。</>
-                  )}
-                  多个模型以逗号分隔，可在首页的模型参数中切换。
-                  {!IS_SITE_MODE && activeProfile.provider === 'openai' && (
-                    <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
-                  )}
-                </div>
-              </label>
-
-              {activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses' && (
-                <label className="block">
-                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">图像生成模型</span>
-                  <input
-                    value={activeProfile.imageGenerationModel ?? ''}
-                    onChange={(e) => updateActiveProfile({ imageGenerationModel: e.target.value })}
-                    onBlur={(e) => commitActiveProfilePatch({ imageGenerationModel: e.target.value })}
-                    type="text"
-                    disabled={activeProfileLocked}
-                    placeholder={DEFAULT_IMAGES_MODEL}
-                    className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
-                  />
-                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    Responses API 的 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">image_generation</code> 工具需要使用 GPT Image 模型，例如 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_IMAGES_MODEL}</code>。
-                    留空时不发送工具模型 ID，保持 API 默认值。
-                    {!IS_SITE_MODE && <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?imageGenerationModel=</code>。</>}
-                  </div>
-                </label>
-              )}
+              {/* 模型候选只属于当前连接，手动输入及旧配置格式保持兼容。 */}
+              <ApiModelFields
+                profile={activeProfile}
+                locked={activeProfileLocked}
+                customProviderName={activeCustomProvider?.name}
+                onChange={updateActiveProfile}
+                onCommit={commitActiveProfilePatch}
+              />
 
               {(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' && activeProfile.provider === 'openai' && (
                 <div className="block">

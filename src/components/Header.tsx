@@ -27,7 +27,7 @@ function isInstalledPwa() {
   return window.matchMedia('(display-mode: standalone)').matches || nav.standalone === true
 }
 
-/** 显示工作台导航及本站 PWA 安装；站点模式隐藏桌面下载和上游更新提示。 */
+/** 显示工作台导航；站点模式隐藏应用安装、桌面下载和上游更新提示。 */
 export default function Header() {
   const appMode = useStore((s) => s.appMode)
   const setAppMode = useStore((s) => s.setAppMode)
@@ -266,8 +266,8 @@ export default function Header() {
             </button>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* 客户端本身就是安装版，不显示 PWA 安装入口 */}
-            {!isTauri && !isPwaInstalled && (
+            {/* 站点版隐藏安装入口；客户端本身已安装，也不显示。 */}
+            {!IS_SITE_MODE && !isTauri && !isPwaInstalled && (
               <div
                 className="relative"
                 {...installTooltip.handlers}
