@@ -196,7 +196,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
           </section>}
         </div>
 
-        <div className="pt-4 border-t border-gray-200 dark:border-white/[0.08] flex justify-center">
+        {!IS_SITE_MODE && <div className="pt-4 border-t border-gray-200 dark:border-white/[0.08] flex justify-center">
           <a
             href="https://github.com/CookSleep/gpt_image_playground"
             target="_blank"
@@ -208,7 +208,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
             </svg>
             @CookSleep
           </a>
-        </div>
+        </div>}
       </div>
     </div>,
     document.body

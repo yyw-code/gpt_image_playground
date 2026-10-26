@@ -27,7 +27,7 @@ function isInstalledPwa() {
   return window.matchMedia('(display-mode: standalone)').matches || nav.standalone === true
 }
 
-/** 显示画廊与 Agent 导航；站点模式隐藏安装入口和上游更新提示。 */
+/** 显示工作台导航及本站 PWA 安装；站点模式隐藏桌面下载和上游更新提示。 */
 export default function Header() {
   const appMode = useStore((s) => s.appMode)
   const setAppMode = useStore((s) => s.setAppMode)
@@ -101,7 +101,7 @@ export default function Header() {
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault()
-      if (!IS_SITE_MODE) setInstallPrompt(event as BeforeInstallPromptEvent)
+      setInstallPrompt(event as BeforeInstallPromptEvent)
       setIsPwaInstalled(false)
     }
 
@@ -161,7 +161,11 @@ export default function Header() {
         <div className="safe-area-x safe-header-inner max-w-7xl mx-auto flex items-center justify-between relative">
           <div className="flex-1 min-w-0 pr-2 flex items-center gap-2">
             <h1 className="inline-flex min-w-0 items-start relative mr-2">
-              {showFavoriteCollectionTitle ? (
+              {IS_SITE_MODE ? (
+                <span className="min-w-0 truncate text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 dark:text-gray-100" title="NorthByteHub 图片工作台">
+                  {showFavoriteCollectionTitle ? <><span className="sm:hidden">{favoriteCollectionTitle}</span><span className="hidden sm:inline">NorthByteHub 图片工作台</span></> : 'NorthByteHub 图片工作台'}
+                </span>
+              ) : showFavoriteCollectionTitle ? (
                 <>
                   <span className="min-w-0 truncate text-[17px] font-bold tracking-tight text-gray-800 dark:text-gray-100 sm:hidden" title={favoriteCollectionTitle}>{favoriteCollectionTitle}</span>
                   <a
@@ -263,7 +267,7 @@ export default function Header() {
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {/* 客户端本身就是安装版，不显示 PWA 安装入口 */}
-            {!IS_SITE_MODE && !isTauri && !isPwaInstalled && (
+            {!isTauri && !isPwaInstalled && (
               <div
                 className="relative"
                 {...installTooltip.handlers}

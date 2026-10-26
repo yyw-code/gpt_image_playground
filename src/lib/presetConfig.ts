@@ -1,7 +1,8 @@
 import type { ApiProfile, AppSettings, CustomProviderDefinition, PresetAgentConfig, PresetConfig } from '../types'
-import { getPresetAgentSettings, normalizeSettings } from './apiProfiles'
+import { createDefaultOpenAIProfile, getPresetAgentSettings, normalizeSettings } from './apiProfiles'
 import { readRuntimeEnv } from './runtimeEnv'
 import { IS_SITE_MODE } from './siteMode'
+import { getSiteConnection, isSiteApiProfile, setSiteConnection } from './siteProfiles'
 
 const RAW_SHOW_PRESET_CONFIG_ONLY = readRuntimeEnv(import.meta.env.VITE_SHOW_PRESET_CONFIG_ONLY, 'VITE_SHOW_PRESET_CONFIG_ONLY')
 const SHOW_PRESET_CONFIG_ONLY = (RAW_SHOW_PRESET_CONFIG_ONLY || readRuntimeEnv(import.meta.env.VITE_SHOW_DEFAULT_CONFIG_ONLY, 'VITE_SHOW_DEFAULT_CONFIG_ONLY')) === 'true'
@@ -14,6 +15,7 @@ let presetProfileFields: Record<string, string[]> | undefined
 let presetAgent: PresetAgentConfig | undefined
 let defaultPresetProfileId: string | null = null
 
+/** 注册部署预置及本站连接；用户备份导入不能调用此入口改变站点地址。 */
 export function setPresetConfig(settings: PresetConfig & {
   presetProfileFields?: Record<string, string[]>
 } | null) {
@@ -24,14 +26,17 @@ export function setPresetConfig(settings: PresetConfig & {
   defaultPresetProfileId = presetProfiles.length === 1
     ? presetProfiles[0].id
     : presetProfiles.find((profile) => profile.isDefault === true)?.id ?? null
+  setSiteConnection(presetProfiles.find((profile) => profile.id === defaultPresetProfileId && profile.provider === 'openai')
+    ?? presetProfiles.find((profile) => profile.provider === 'openai'))
 }
 
 export function getPresetProfileIds() {
   return new Set(presetProfiles.map((profile) => profile.id))
 }
 
+/** 读取预置说明，兼容本站为保留旧地址而创建的预置别名。 */
 export function getPresetProfileDescription(id: string) {
-  return presetProfiles.find((profile) => profile.id === id)?.description
+  return presetProfiles.find((profile) => profile.id === getPresetProfileSourceId(id))?.description
 }
 
 export function getPresetProviderIds() {
@@ -58,26 +63,34 @@ export function getDefaultPresetBaseUrl() {
   return profile.baseUrl
 }
 
+/** 将本站冲突预置的保留后缀还原为部署 ID，确保删除记录和参数锁定可跨刷新恢复。 */
+export function getPresetProfileSourceId(id: string) {
+  return presetProfiles.find((profile) => profile.id === id)?.id
+    ?? (IS_SITE_MODE ? presetProfiles.find((profile) => id.startsWith(profile.id) && /^(?:-site)+$/.test(id.slice(profile.id.length)))?.id : undefined)
+    ?? id
+}
+
+/** 判断当前配置是否为部署预置，包含本站保留旧连接后产生的别名。 */
 export function isPresetProfile(id: string) {
-  return presetProfiles.some((profile) => profile.id === id)
+  return presetProfiles.some((profile) => profile.id === getPresetProfileSourceId(id))
 }
 
 export function isPresetProvider(id: string) {
   return presetProviders.some((provider) => provider.id === id)
 }
 
-/** 站点有预置配置时，仅展示部署提供的配置；未配置时保留手动接入能力。 */
+/** 仅显式部署限制才禁用配置管理；站点模式本身允许保存多套本站配置。 */
 export function isPresetConfigOnlyEnabled() {
-  return (IS_SITE_MODE || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
+  return SHOW_PRESET_CONFIG_ONLY && presetProfiles.length > 0
 }
 
 export function isPresetConfigParamsLocked() {
   return LOCK_PRESET_CONFIG_PARAMS && presetProfiles.length > 0
 }
 
-/** 阻止删除部署要求保留的预置配置，站点模式自动保留。 */
+/** 仅在部署明确要求时阻止删除预置配置。 */
 export function isPresetConfigDeletionPrevented() {
-  return (IS_SITE_MODE || PREVENT_PRESET_CONFIG_DELETION || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
+  return (PREVENT_PRESET_CONFIG_DELETION || SHOW_PRESET_CONFIG_ONLY) && presetProfiles.length > 0
 }
 
 export function isPresetProfileLocked(id: string) {
@@ -99,11 +112,58 @@ export function isPresetProviderDeletionPrevented(id: string, profiles: ApiProfi
   return profiles.some((profile) => profile.provider === id && isPresetProfileLocked(profile.id))
 }
 
-/** 应用部署策略；站点锁定连接地址与供应商，保留用户密钥、模型参数及旧配置数据。 */
+/** 保留外站数据并限制活动引用；启动时安全加入部署预置，ID 冲突时另建空密钥配置。 */
+function enforceSiteConfigPolicy(settings: AppSettings, options: { restoreSitePresets?: boolean; dismissedPresetProfileIds?: string[] }): AppSettings {
+  const connection = getSiteConnection()
+  const profiles = [...settings.profiles]
+  const presetIdMap = new Map<string, string>()
+  for (const preset of presetProfiles.filter(isSiteApiProfile)) {
+    let id = preset.id
+    while (profiles.some((profile) => profile.id === id && !isSiteApiProfile(profile))) id = `${id}-site`
+    const existingIdx = profiles.findIndex((profile) => profile.id === id && isSiteApiProfile(profile))
+    if (existingIdx >= 0) {
+      if (isPresetConfigParamsLocked()) {
+        profiles[existingIdx] = { ...preset, id, apiKey: profiles[existingIdx].apiKey, selectedModel: profiles[existingIdx].selectedModel }
+      }
+      presetIdMap.set(preset.id, id)
+      continue
+    }
+    if (!options.restoreSitePresets && !isPresetConfigDeletionPrevented()) continue
+    if (!isPresetConfigDeletionPrevented() && options.dismissedPresetProfileIds?.includes(preset.id)) continue
+    // 同名旧配置即使来自旧部署，也不能把旧 Key 迁移给新的连接。
+    profiles.push({ ...preset, id, apiKey: '', isDefault: undefined })
+    presetIdMap.set(preset.id, id)
+  }
+  if (!profiles.some(isSiteApiProfile)) {
+    let id = 'site-openai'
+    while (profiles.some((profile) => profile.id === id)) id = `${id}-site`
+    profiles.push(createDefaultOpenAIProfile({ id, name: 'NorthByteHub', ...connection, apiKey: '' }))
+  }
+  const available = profiles.filter((profile) => isSiteApiProfile(profile) &&
+    (!isPresetConfigOnlyEnabled() || [...presetIdMap.values()].includes(profile.id)))
+  const fallback = available[0] ?? profiles.find(isSiteApiProfile)!
+  const activeProfileId = available.some((profile) => profile.id === settings.activeProfileId) ? settings.activeProfileId : fallback.id
+  const textProfiles = available.filter((profile) => profile.apiMode === 'responses')
+  const presetSettings = isPresetConfigParamsLocked() && presetAgent
+    ? getPresetAgentSettings(presetAgent) : {}
+  const textId = presetIdMap.get(presetSettings.agentTextProfileId ?? '') ?? presetSettings.agentTextProfileId ?? settings.agentTextProfileId
+  const imageId = presetIdMap.get(presetSettings.agentImageProfileId ?? '') ?? presetSettings.agentImageProfileId ?? settings.agentImageProfileId
+  return {
+    ...settings,
+    ...presetSettings,
+    profiles,
+    activeProfileId,
+    agentTextProfileId: textProfiles.find((profile) => profile.id === textId)?.id ?? textProfiles[0]?.id ?? null,
+    agentImageProfileId: available.find((profile) => profile.id === imageId)?.id ?? fallback.id,
+  }
+}
+
+/** 应用部署策略；本站仅限制连接归属，普通模式沿用原有预置参数锁定规则。 */
 export function enforcePresetConfigPolicy(
   settings: AppSettings,
-  options: { dismissedPresetProviderIds?: string[] } = {},
+  options: { dismissedPresetProviderIds?: string[]; dismissedPresetProfileIds?: string[]; restoreSitePresets?: boolean } = {},
 ): AppSettings {
+  if (IS_SITE_MODE) return enforceSiteConfigPolicy(settings, options)
   const presetConfigOnly = isPresetConfigOnlyEnabled()
   const paramsLocked = isPresetConfigParamsLocked()
   if (presetProfiles.length === 0) return settings
@@ -117,7 +177,6 @@ export function enforcePresetConfigPolicy(
     if (!preset) return profile.isDefault ? { ...profile, isDefault: undefined } : profile
     return {
       ...(paramsLocked ? preset : profile),
-      ...(IS_SITE_MODE ? { baseUrl: preset.baseUrl, apiMode: preset.apiMode, apiProxy: preset.apiProxy } : {}),
       apiKey: profile.apiKey,
       selectedModel: profile.selectedModel,
       provider: paramsLocked || presetConfigOnly ? preset.provider : profile.provider,

@@ -24,7 +24,9 @@ import type {
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
 import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
-import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProviderIds, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
+import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProfileSourceId, getPresetProviderIds, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
+import { IS_SITE_MODE } from './lib/siteMode'
+import { isSiteApiProfile } from './lib/siteProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { getTaskPromptText, remapImageMentionsForOrder, replaceImageMentionsForApi, stripImageMentionMarkers } from './lib/promptImageMentions'
 import {
@@ -611,10 +613,11 @@ export const useStore = create<AppState>()(
       settings: { ...DEFAULT_SETTINGS },
       previousPresetConfig: null,
       dismissedPresetProfileIds: [],
+      /** 记录预置删除；本站冲突别名使用原部署 ID 保存，刷新后也不会重新插入。 */
       dismissPresetProfile: (id) => set((state) => ({
-        dismissedPresetProfileIds: state.dismissedPresetProfileIds.includes(id)
+        dismissedPresetProfileIds: state.dismissedPresetProfileIds.includes(getPresetProfileSourceId(id))
           ? state.dismissedPresetProfileIds
-          : [...state.dismissedPresetProfileIds, id],
+          : [...state.dismissedPresetProfileIds, getPresetProfileSourceId(id)],
       })),
       restorePresetProfile: (id) => set((state) => ({
         dismissedPresetProfileIds: state.dismissedPresetProfileIds.filter((item) => item !== id),
@@ -674,6 +677,7 @@ export const useStore = create<AppState>()(
             : {}),
         }
       }),
+      /** 合并部署预置；本站保留旧连接原数据，通过站点策略另建配置，避免迁移旧密钥。 */
       setPresetImportedSettings: async (importedSettings, transform) => {
         set((state) => {
           const presetIds = getPresetProfileIds()
@@ -695,7 +699,7 @@ export const useStore = create<AppState>()(
           })
           const settings = normalizeSettings(enforcePresetConfigPolicy(
             normalizeSettings(transform?.(merged.settings) ?? merged.settings),
-            { dismissedPresetProviderIds: effectiveDismissedPresetProviderIds },
+            { dismissedPresetProviderIds: effectiveDismissedPresetProviderIds, dismissedPresetProfileIds, restoreSitePresets: true },
           ))
           const shouldClearReusedProfile = state.reusedTaskApiProfileId && settings.activeProfileId === state.reusedTaskApiProfileId
           return {
@@ -4085,13 +4089,13 @@ export async function retryTask(task: TaskRecord) {
   executeTask(taskId)
 }
 
-/** 复用配置 */
+/** 复用任务参数与可用配置；站点模式不临时启用外站历史连接，也不迁移其密钥。 */
 export async function reuseConfig(task: TaskRecord) {
   const { settings, setPrompt, setParams, setInputImages, setMaskDraft, clearMaskDraft, showToast, setConfirmDialog, setReusedTaskApiProfile } = useStore.getState()
   const normalizedSettings = normalizeSettings(settings)
   const currentProfile = getActiveApiProfile(settings)
   const taskProfile = normalizedSettings.reuseTaskApiProfileTemporarily ? getTaskApiProfile(normalizedSettings, task) : null
-  const matchedProfile = taskProfile && (!isPresetConfigOnlyEnabled() || isPresetProfile(taskProfile.id)) ? taskProfile : null
+  const matchedProfile = taskProfile && (!IS_SITE_MODE || isSiteApiProfile(taskProfile)) && (!isPresetConfigOnlyEnabled() || isPresetProfile(taskProfile.id)) ? taskProfile : null
   const shouldTemporarilyReuseProfile = Boolean(matchedProfile && matchedProfile.id !== currentProfile.id)
   const missingReusedProfile = normalizedSettings.reuseTaskApiProfileTemporarily && !matchedProfile
   const taskProfileName = matchedProfile?.name ?? getTaskApiProfileName(task)

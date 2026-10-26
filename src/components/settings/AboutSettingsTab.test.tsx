@@ -24,7 +24,9 @@ describe('站点关于页', () => {
     expect(html).not.toContain('赞助作者')
     expect(html).not.toContain('反馈问题')
     expect(html).toContain('MIT')
-    expect(html).toContain('https://github.com/CookSleep/gpt_image_playground')
+    expect(html).toContain('GPT Image Playground')
+    expect(html).toContain('CookSleep')
+    expect(html).not.toContain('href="https://github.com')
     expect(html).toContain('字体与第三方许可')
   })
 

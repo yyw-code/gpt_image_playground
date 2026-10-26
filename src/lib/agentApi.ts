@@ -3,6 +3,7 @@ import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devP
 import { appendStreamingFormatHint, createRequestTimeoutError, getApiErrorMessage, getResponsesImageResultBase64, maybeAppendImageToolDroppedHint, maybeAppendStreamingHint, MIME_MAP, normalizeBase64Image, pickActualParams, PROMPT_REWRITE_GUARD_PREFIX } from './imageApiShared'
 import { getImageGenerationModel } from './imageModels'
 import { apiFetch } from './platform'
+import { getSiteProfileError } from './siteProfiles'
 import { normalizeResponsesOutputItems } from './responsesOutputState'
 import { isEventStreamResponse, readJsonServerSentEvents, throwIfAborted } from './serverSentEvents'
 
@@ -591,6 +592,7 @@ async function parseAgentStreamResponse(
   }
 }
 
+/** 请求 Agent 对话及工具调用；外站配置在上传或调用模型前直接拒绝。 */
 export async function callAgentResponsesApi(opts: {
   settings: AppSettings
   profile: ApiProfile
@@ -607,6 +609,8 @@ export async function callAgentResponsesApi(opts: {
   onImageToolFailed?: (event: AgentApiImageToolFailure) => void | Promise<void>
 }): Promise<AgentApiResult> {
   const { settings, profile, imageProfile, params, input, maskDataUrl, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed } = opts
+  const siteError = getSiteProfileError(profile) ?? (imageProfile ? getSiteProfileError(imageProfile) : null)
+  if (siteError) throw new Error(siteError)
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -662,6 +666,7 @@ export async function callAgentResponsesApi(opts: {
   }
 }
 
+/** 使用当前文本配置生成会话标题，请求前检查本站连接，失败时抛出错误。 */
 export async function callAgentConversationTitleApi(opts: {
   settings: AppSettings
   profile: ApiProfile
@@ -670,6 +675,8 @@ export async function callAgentConversationTitleApi(opts: {
   signal?: AbortSignal
 }): Promise<string> {
   const { settings, profile, prompt, imageDataUrls, signal } = opts
+  const siteError = getSiteProfileError(profile)
+  if (siteError) throw new Error(siteError)
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
@@ -728,8 +735,7 @@ export interface BatchImageCallResult {
 }
 
 /**
- * Generate a single image using Responses API.
- * This mirrors the gallery mode's callResponsesImageApiSingle pattern.
+ * 使用 Responses API 生成一张批量图片；请求前检查本站连接，禁止历史外站配置发起调用。
  */
 export async function callBatchImageSingle(opts: {
   profile: ApiProfile
@@ -745,6 +751,8 @@ export async function callBatchImageSingle(opts: {
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>
 }): Promise<BatchImageCallResult> {
   const { profile, params, batchItemId, prompt, referenceImageDataUrls, referenceIds, allowPromptRewrite, signal, onImageToolStarted, onPartialImage, onImageToolCompleted } = opts
+  const siteError = getSiteProfileError(profile)
+  if (siteError) throw new Error(siteError)
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)

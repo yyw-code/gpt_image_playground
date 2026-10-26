@@ -24,8 +24,10 @@ interface AgentSettingsTabProps {
   updateAgentApiConfigMode: (mode: AgentApiConfigMode) => void
   commitSettings: (nextDraft: AppSettings) => void
   commitAgentMaxToolRounds: () => void
+  onEditApiProfiles: () => void
 }
 
+/** 选择独立的文本/图像配置；配置统一在 API 页维护，空列表说明准备条件并提供入口。 */
 export default function AgentSettingsTab({
   draft,
   agentMaxToolRoundsInput,
@@ -37,6 +39,7 @@ export default function AgentSettingsTab({
   updateAgentApiConfigMode,
   commitSettings,
   commitAgentMaxToolRounds,
+  onEditApiProfiles,
 }: AgentSettingsTabProps) {
   return (
     <div className="space-y-4">
@@ -61,9 +64,11 @@ export default function AgentSettingsTab({
           {(['apiConfigMode', 'textProfileId', 'imageProfileId'] as const).some(isPresetAgentFieldLocked) && (
             <div>部分选项由部署配置锁定。</div>
           )}
+          <div>关闭独立配置时，Agent 跟随当前 API 配置。可在 API 配置页保存多套配置，分别设置密钥和模型。</div>
           <div>原生：使用原生的 Responses API 配置，由模型调用 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] dark:bg-white/[0.06]">image_generation</code> 工具生成图片。</div>
           <div>混合：使用非原生的混合 API 配置，由文本模型调用自定义工具，请求图像模型生成图像，解决部分服务商/模型不支持 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] dark:bg-white/[0.06]">image_generation</code> 工具的问题。</div>
         </div>
+        <button type="button" onClick={onEditApiProfiles} className="mt-2 text-xs text-blue-600 hover:underline dark:text-blue-400">管理 API 配置</button>
       </div>
 
       {draft.agentApiConfigMode !== 'off' && (
@@ -90,6 +95,7 @@ export default function AgentSettingsTab({
             </div>
             <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
               用于对话和调用工具，仅支持 Responses API 配置。
+              {agentTextProfileOptions.length === 0 && <div className="mt-1">请先在 API 配置页创建配置，选择 Responses API，并填写个人 API Key 和文本模型。</div>}
             </div>
           </div>
 
@@ -116,6 +122,7 @@ export default function AgentSettingsTab({
               </div>
               <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
                 用于生成图像，支持所有类型的 API 配置。
+                {agentImageProfileOptions.length === 0 && <div className="mt-1">请先在 API 配置页保存一套图像配置，并填写个人 API Key 和图像模型。</div>}
               </div>
             </div>
           )}

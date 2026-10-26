@@ -7,6 +7,7 @@ import { hasActiveDataOperations, trackDataTransfer } from '../lib/dataOperation
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
 import { isTauri } from '../lib/platform'
 import { IS_SITE_MODE } from '../lib/siteMode'
+import { getSiteConnection, isSiteApiProfile } from '../lib/siteProfiles'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
@@ -34,12 +35,12 @@ import {
   getDefaultPresetBaseUrl,
   getDefaultPresetProfileId,
   getPresetProfileDescription,
-  getPresetProfileIds,
   isPresetConfigDeletionPrevented,
   isPresetConfigOnlyEnabled,
   isPresetProvider,
   isPresetProviderDeletionPrevented,
   isPresetProfileLocked,
+  isPresetProfile as isDeploymentProfile,
   isPresetProviderLocked,
 } from '../lib/presetConfig'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
@@ -237,16 +238,16 @@ export default function SettingsModal() {
   const apiProxyLocked = isApiProxyLocked(apiProxyConfig)
   const presetConfigOnly = isPresetConfigOnlyEnabled()
   const presetDeletionPrevented = isPresetConfigDeletionPrevented()
-  const presetProfileIds = getPresetProfileIds()
-  const visibleProfiles = presetConfigOnly
-    ? draft.profiles.filter((profile) => presetProfileIds.has(profile.id))
-    : draft.profiles
+  const siteConnection = getSiteConnection()
+  const visibleProfiles = draft.profiles.filter((profile) =>
+    (!IS_SITE_MODE || isSiteApiProfile(profile)) && (!presetConfigOnly || isDeploymentProfile(profile.id)),
+  )
   const profileMenuDisabled = presetConfigOnly && visibleProfiles.length <= 1
   const defaultProfileId = getDefaultPresetProfileId() ?? getDefaultApiProfileId(draft)
   const activeProfile = draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? getActiveApiProfile(draft)
   const activePresetDescription = getPresetProfileDescription(activeProfile.id)
   const activeProfileLocked = isPresetProfileLocked(activeProfile.id)
-  const siteConnectionManaged = IS_SITE_MODE && presetProfileIds.has(activeProfile.id)
+  const siteConnectionManaged = IS_SITE_MODE
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal'
   const activeCustomProvider = getCustomProviderDefinition(draft, activeProfile.provider)
@@ -304,7 +305,7 @@ export default function SettingsModal() {
     ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
     : '未开启任何使用压缩包进行批量下载的途径'
 
-  const agentProfiles = (presetConfigOnly ? visibleProfiles : draft.profiles)
+  const agentProfiles = visibleProfiles
     .filter((profile) => {
       if (!profile.apiKey.trim()) return false
       if (profile.baseUrl.trim() || profile.provider === 'fal') return true
@@ -320,7 +321,7 @@ export default function SettingsModal() {
     value: profile.id,
   }))
   const agentImageProfileOptions = agentProfiles.map((profile) => ({
-    label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${profile.model}`,
+    label: `${profile.name} · ${IS_SITE_MODE ? 'NorthByteHub' : getApiProviderLabel(draft, profile.provider)} · ${profile.model}`,
     value: profile.id,
   }))
 
@@ -344,7 +345,7 @@ export default function SettingsModal() {
       profiles: displaySettings.profiles.map((profile) => ({
         ...profile,
         // 客户端不使用代理，但保留已保存的设置，导回网页版时仍然有效
-        apiProxy: isProfileApiProxyEligible(displaySettings, profile) && apiProxyAvailable
+        apiProxy: IS_SITE_MODE ? profile.apiProxy : isProfileApiProxyEligible(displaySettings, profile) && apiProxyAvailable
           ? (apiProxyLocked || profile.apiProxy)
           : isTauri && profile.apiProxy,
       })),
@@ -435,8 +436,10 @@ export default function SettingsModal() {
     }
   }
 
+  /** 保存编辑结果；本站连接由部署管理，外站历史配置保持原样。 */
   const commitSettings = (nextDraft: AppSettings) => {
     const normalizedProfiles = nextDraft.profiles.map((profile) => {
+      if (IS_SITE_MODE) return profile
       const nextApiProxy = isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false
       const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
       const emptyBaseUrlFallback = profile.id === defaultProfileId
@@ -731,10 +734,11 @@ export default function SettingsModal() {
     setShowProfileMenu(false)
   }
 
+  /** 创建独立的本站配置，密钥为空；普通模式沿用默认连接。 */
   const createNewProfile = () => {
     if (presetConfigOnly) return
     setReusedTaskApiProfile(null)
-    const profile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置' })
+    const profile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置', ...(IS_SITE_MODE ? { ...siteConnection, apiKey: '' } : {}) })
     const nextDraft = normalizeSettings({ 
         ...draft, 
         profiles: [...draft.profiles, profile],
@@ -763,6 +767,7 @@ export default function SettingsModal() {
     })
   }
 
+  /** 复制当前配置供独立修改密钥和模型，保留原配置。 */
   const duplicateActiveProfile = () => {
     if (presetConfigOnly) return
     setReusedTaskApiProfile(null)
@@ -782,8 +787,10 @@ export default function SettingsModal() {
     setShowProfileMenu(false)
   }
 
+  /** 切换可见配置；本站拒绝启用本地保留的外站配置。 */
   const switchProfile = (id: string) => {
-    if (presetConfigOnly && !presetProfileIds.has(id)) return
+    if (!visibleProfiles.some((profile) => profile.id === id)) return
+    if (presetConfigOnly && !isDeploymentProfile(id)) return
     setReusedTaskApiProfile(null)
     const nextDraft = normalizeSettings({ ...draft, activeProfileId: id })
     commitSettings(nextDraft)
@@ -929,16 +936,17 @@ export default function SettingsModal() {
     handleProfileDragEnd()
   }
 
+  /** 删除配置并维护预置标记，至少保留一套本站配置。 */
   const deleteProfile = (id: string) => {
-    const preset = presetProfileIds.has(id)
-    if (presetConfigOnly || draft.profiles.length <= 1 || (preset && presetDeletionPrevented) || (!preset && id === defaultProfileId)) return
+    const preset = isDeploymentProfile(id)
+    if (presetConfigOnly || visibleProfiles.length <= 1 || (preset && presetDeletionPrevented) || (!IS_SITE_MODE && !preset && id === defaultProfileId)) return
     if (id === reusedTaskApiProfileId) setReusedTaskApiProfile(null)
     if (preset) dismissPresetProfile(id)
     const nextProfiles = draft.profiles.filter((item) => item.id !== id)
     const nextDraft = normalizeSettings({
       ...draft,
       profiles: nextProfiles,
-      activeProfileId: draft.activeProfileId === id ? nextProfiles[0].id : draft.activeProfileId,
+      activeProfileId: draft.activeProfileId === id ? visibleProfiles.find((profile) => profile.id !== id)!.id : draft.activeProfileId,
     })
     commitSettings(nextDraft)
   }
@@ -1262,15 +1270,19 @@ export default function SettingsModal() {
                 updateAgentApiConfigMode={updateAgentApiConfigMode}
                 commitSettings={commitSettings}
                 commitAgentMaxToolRounds={commitAgentMaxToolRounds}
+                onEditApiProfiles={() => setActiveTab('api')}
               />
             )}
             
             {activeTab === 'api' && (
               <div className="space-y-4">
-                {IS_SITE_MODE && !presetConfigOnly && (
+                {IS_SITE_MODE && !siteConnection.baseUrl && (
                   <p className="rounded-xl bg-blue-50 px-3.5 py-3 text-sm leading-6 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300">
-                    本站暂未提供预置接口，请先手动填写可用的接口和个人密钥。当前尚不支持自动读取主站密钥。
+                    本站尚未配置 API 地址，请联系站点管理员。当前无法发送生成请求，不会回退其他供应商。
                   </p>
+                )}
+                {IS_SITE_MODE && draft.profiles.length > visibleProfiles.length && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">旧的外站配置已保留在本地，在本站不可选用；导出备份仍会保留这些数据。</p>
                 )}
                 <div>
                   <div className="mb-1.5 flex items-center gap-1.5">
@@ -1344,7 +1356,7 @@ export default function SettingsModal() {
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="min-w-0 truncate">{activeProfile.name}</span>
                         <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">
-                          {getApiProviderLabel(draft, activeProfile.provider)}
+                          {IS_SITE_MODE ? 'NorthByteHub' : getApiProviderLabel(draft, activeProfile.provider)}
                         </span>
                       </span>
                       <ChevronDownIcon className={`w-3.5 h-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500 transition-transform duration-200 ${showProfileMenu ? 'rotate-180' : ''}`} />
@@ -1372,7 +1384,7 @@ export default function SettingsModal() {
                           <div>
                             {visibleProfiles.map((profile) => {
                               const isDefaultProfile = profile.id === defaultProfileId
-                              const isPresetProfile = presetProfileIds.has(profile.id)
+                              const isPresetProfile = isDeploymentProfile(profile.id)
                               return (
                                 <div
                                   key={profile.id}
@@ -1414,7 +1426,7 @@ export default function SettingsModal() {
                                   )}
                                   <span className="min-w-0 truncate">{profile.name}</span>
                                   <span className={`rounded px-1.5 py-0.5 text-[10px] shrink-0 ${profile.id === activeProfile.id ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' : 'bg-gray-100 text-gray-500 dark:bg-white/[0.08] dark:text-gray-400'}`}>
-                                    {getApiProviderLabel(draft, profile.provider)}
+                                    {IS_SITE_MODE ? 'NorthByteHub' : getApiProviderLabel(draft, profile.provider)}
                                   </span>
                                 </div>
                                 
@@ -1432,7 +1444,7 @@ export default function SettingsModal() {
                                   >
                                     <LinkIcon className="h-3.5 w-3.5" />
                                   </button>}
-                                  {!presetConfigOnly && (isDefaultProfile || draft.profiles.length > 1) && (
+                                  {!presetConfigOnly && (IS_SITE_MODE ? visibleProfiles.length > 1 : isDefaultProfile || draft.profiles.length > 1) && (
                                     <TooltipButton
                                       tooltip={isPresetProfile && presetDeletionPrevented ? '预置配置不可删除' : '删除配置'}
                                       disabled={isPresetProfile && presetDeletionPrevented}
@@ -1472,7 +1484,7 @@ export default function SettingsModal() {
                 </div>
 
               {/* 1. 配置名称 */}
-              {!siteConnectionManaged && <label className="block">
+              <label className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">配置名称</span>
                 <input
                   value={activeProfile.name}
@@ -1482,8 +1494,14 @@ export default function SettingsModal() {
                   disabled={activeProfileLocked}
                   className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
-              </label>}
+              </label>
 
+              {siteConnectionManaged && (
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">我的站点</span>
+                  <div className="rounded-xl bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 dark:bg-white/[0.06] dark:text-gray-200">NorthByteHub</div>
+                </div>
+              )}
               {/* 2. 服务商类型 */}
               {!siteConnectionManaged && <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">服务商类型</span>
@@ -1498,22 +1516,25 @@ export default function SettingsModal() {
               </div>}
 
               {/* 3. API URL */}
-              {!siteConnectionManaged && activeProviderUsesApiUrl && (
+              {(siteConnectionManaged || activeProviderUsesApiUrl) && (
                 <label className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">API URL</span>
                   </div>
                   <input
-                    value={activeProfile.baseUrl}
+                    value={siteConnectionManaged ? siteConnection.baseUrl : activeProfile.baseUrl}
                     onChange={(e) => updateActiveProfile({ baseUrl: e.target.value })}
                     onBlur={(e) => commitActiveProfilePatch({ baseUrl: e.target.value })}
                     type="text"
-                    disabled={apiProxyEnabled || activeProfileLocked}
+                    readOnly={siteConnectionManaged}
+                    disabled={!siteConnectionManaged && (apiProxyEnabled || activeProfileLocked)}
                     placeholder={activeProfile.provider === 'fal' ? DEFAULT_FAL_BASE_URL : DEFAULT_SETTINGS.baseUrl}
                     className={`w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50 ${apiProxyEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   />
                   <div data-selectable-text className="mt-1.5 min-h-[22px] flex items-center text-xs text-gray-500 dark:text-gray-500">
-                    {apiProxyEnabled ? (
+                    {siteConnectionManaged ? (
+                      <span>本站接口由部署端维护；此配置的所有请求均使用上方地址。</span>
+                    ) : apiProxyEnabled ? (
                       <span className="text-yellow-600 dark:text-yellow-500">已开启代理，实际请求目标由部署端决定，此处设置被忽略。</span>
                     ) : activeProfile.provider === 'fal' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 fal.ai 代理 URL。</span>
@@ -1588,7 +1609,7 @@ export default function SettingsModal() {
               </div>
 
               {/* 6. API 接口（Images/Responses） */}
-              {!siteConnectionManaged && activeProfile.provider === 'openai' && (
+              {activeProfile.provider === 'openai' && (
                 <div className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API 接口</span>
                   <Select
@@ -1605,7 +1626,7 @@ export default function SettingsModal() {
                     className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
                   />
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">apiMode=images</code> 或 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">apiMode=responses</code>。
+                    Images 用于直接生成图片；Responses 可用于 Agent 文本模型。同一站点可以分别保存两套配置。
                   </div>
                 </div>
               )}

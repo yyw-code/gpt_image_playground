@@ -6,52 +6,60 @@ afterEach(() => {
 })
 
 describe('preset config policy', () => {
-  it('站点仅展示预置配置，锁定连接并保留个人密钥、模型和旧配置', async () => {
+  it('本站允许多套配置和独立 Agent，保留外站原地址及密钥但不启用', async () => {
     vi.stubEnv('VITE_SITE_MODE', 'true')
     const { createDefaultOpenAIProfile, normalizeSettings } = await import('./apiProfiles')
     const policy = await import('./presetConfig')
-    const preset = createDefaultOpenAIProfile({ id: 'site', baseUrl: 'https://site.example/v1', apiMode: 'responses' })
-    const oldProfile = createDefaultOpenAIProfile({ id: 'old' })
+    const preset = createDefaultOpenAIProfile({ id: 'site', baseUrl: 'https://site.example/v1' })
+    const text = { ...preset, id: 'text', apiMode: 'responses' as const, model: 'text-model', apiKey: 'text-key' }
+    const image = { ...preset, id: 'image', model: 'image-model', apiKey: 'image-key' }
+    const foreign = { ...preset, id: 'old', baseUrl: 'https://other.example/v1', apiKey: 'old-key' }
     policy.setPresetConfig({ customProviders: [], profiles: [preset] })
-
     const settings = policy.enforcePresetConfigPolicy(normalizeSettings({
-      profiles: [{ ...preset, baseUrl: 'https://other.example/v1', apiMode: 'images', apiProxy: true, apiKey: 'test-key', model: 'user-model' }, oldProfile],
-      activeProfileId: oldProfile.id,
-      agentTextProfileId: oldProfile.id,
-      agentImageProfileId: oldProfile.id,
+      profiles: [image, text, foreign], activeProfileId: image.id,
+      agentApiConfigMode: 'hybrid', agentTextProfileId: text.id, agentImageProfileId: image.id,
     }))
-
-    expect(policy.isPresetConfigOnlyEnabled()).toBe(true)
-    expect(policy.isPresetConfigDeletionPrevented()).toBe(true)
-    expect(policy.isPresetProfileLocked(preset.id)).toBe(false)
-    expect(settings.profiles[0]).toMatchObject({
-      baseUrl: preset.baseUrl, provider: preset.provider, apiMode: 'responses', apiProxy: preset.apiProxy,
-      apiKey: 'test-key', model: 'user-model',
-    })
-    expect(settings.profiles[1].id).toBe('old')
-    expect(settings.activeProfileId).toBe('site')
-    expect(settings.agentTextProfileId).toBe('site')
-    expect(settings.agentImageProfileId).toBe('site')
+    expect(policy.isPresetConfigOnlyEnabled()).toBe(false)
+    expect(policy.isPresetConfigDeletionPrevented()).toBe(false)
+    expect(settings.activeProfileId).toBe('image')
+    expect(settings.agentTextProfileId).toBe('text')
+    expect(settings.agentImageProfileId).toBe('image')
+    expect(settings.profiles).toEqual([image, text, foreign])
+    const rejected = policy.enforcePresetConfigPolicy({ ...settings, activeProfileId: 'old', agentTextProfileId: 'old', agentImageProfileId: 'old' })
+    expect(rejected.activeProfileId).toBe('image')
+    expect(rejected.agentTextProfileId).toBe('text')
+    expect(rejected.agentImageProfileId).toBe('image')
+    expect(rejected.profiles.find((profile) => profile.id === 'old')).toEqual(foreign)
   })
 
-  it('站点没有预置接口时不隐藏现有手动配置，也不清空用户数据', async () => {
+  it('部署缺少地址时保留旧数据，创建空配置并阻止请求，不回退官方接口', async () => {
     vi.stubEnv('VITE_SITE_MODE', 'true')
-    const { normalizeSettings } = await import('./apiProfiles')
+    const { createDefaultOpenAIProfile, normalizeSettings, validateApiProfile } = await import('./apiProfiles')
     const policy = await import('./presetConfig')
     policy.setPresetConfig(null)
-    const settings = normalizeSettings({})
-    expect(policy.isPresetConfigOnlyEnabled()).toBe(false)
-    expect(policy.enforcePresetConfigPolicy(settings)).toBe(settings)
+    const foreign = createDefaultOpenAIProfile({ id: 'old', baseUrl: 'https://other.example/v1', apiKey: 'old-key' })
+    const settings = policy.enforcePresetConfigPolicy(normalizeSettings({ profiles: [foreign], activeProfileId: 'old' }))
+    expect(settings.profiles[0]).toEqual(foreign)
+    const active = settings.profiles.find((profile) => profile.id === settings.activeProfileId)!
+    expect(active.baseUrl).toBe('')
+    expect(active.apiKey).toBe('')
+    expect(validateApiProfile(active)).toContain('本站尚未配置')
   })
 
-  it('站点恢复被删除的预置接口并维持空密钥状态', async () => {
+  it('预置 ID 与外站旧配置冲突时另建本站配置，不能把旧 Key 投向新地址', async () => {
     vi.stubEnv('VITE_SITE_MODE', 'true')
     const { createDefaultOpenAIProfile, normalizeSettings } = await import('./apiProfiles')
     const policy = await import('./presetConfig')
-    const preset = createDefaultOpenAIProfile({ id: 'site', apiKey: '' })
+    const preset = createDefaultOpenAIProfile({ id: 'site', baseUrl: 'https://site.example/v1' })
     policy.setPresetConfig({ customProviders: [], profiles: [preset] })
-    const settings = policy.enforcePresetConfigPolicy(normalizeSettings({ profiles: [] }))
-    expect(settings.profiles.find((profile) => profile.id === 'site')?.apiKey).toBe('')
+    const foreign = { ...preset, baseUrl: 'https://old.example/v1', apiKey: 'old-key' }
+    const settings = policy.enforcePresetConfigPolicy(normalizeSettings({ profiles: [foreign] }), { restoreSitePresets: true })
+    expect(settings.profiles[0]).toEqual(foreign)
+    const active = settings.profiles.find((profile) => profile.id === settings.activeProfileId)!
+    expect(active.baseUrl).toBe(preset.baseUrl)
+    expect(active.apiKey).toBe('')
+    expect(active.id).not.toBe(foreign.id)
+    expect(policy.enforcePresetConfigPolicy(settings, { restoreSitePresets: true }).profiles).toEqual(settings.profiles)
   })
 
   it('exposes every current preset profile in preset-only mode', async () => {

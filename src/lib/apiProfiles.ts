@@ -26,6 +26,8 @@ import { isImportableConfigUrl } from './importableConfigUrl'
 import { DEFAULT_IMAGES_MODEL } from './imageModels'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from './batchPrompts'
 import { normalizeFontMode } from './fonts'
+import { IS_SITE_MODE } from './siteMode'
+import { getSiteProfileError, isSiteApiProfile } from './siteProfiles'
 
 const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL, 'VITE_DEFAULT_API_URL')
@@ -33,7 +35,7 @@ const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_A
 const DOCKER_DEPLOYMENT = readRuntimeEnv(import.meta.env.VITE_DOCKER_DEPLOYMENT, 'VITE_DOCKER_DEPLOYMENT') === 'true'
 const DEFAULT_API_URL_PATCH = isImportableConfigUrl(RAW_DEFAULT_API_URL)
   ? null
-  : parseDefaultApiUrl(RAW_DEFAULT_API_URL || (DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL))
+  : parseDefaultApiUrl(RAW_DEFAULT_API_URL || (IS_SITE_MODE || DOCKER_DEPLOYMENT && DEFAULT_OPENAI_API_PROXY ? '' : OPENAI_DEFAULT_BASE_URL))
 const DEFAULT_BASE_URL = DEFAULT_API_URL_PATCH?.baseUrl ?? ''
 export { DEFAULT_IMAGES_MODEL } from './imageModels'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-6.1-sol'
@@ -676,6 +678,7 @@ function normalizeDeploymentProfileEntries(input: unknown, customProviderIds: Se
   })
 }
 
+/** 清洗持久化或导入配置并维护引用；本站的 Agent 引用只回退到本站连接，保留外站原数据。 */
 export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSettings {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
   const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
@@ -712,13 +715,14 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     : profiles[0].id
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
   const agentApiConfigMode = normalizeAgentApiConfigMode(record.agentApiConfigMode)
-  const firstAgentTextProfile = profiles.find(isAgentTextApiProfile)
-  const agentTextProfileId = typeof record.agentTextProfileId === 'string' && profiles.some((p) => p.id === record.agentTextProfileId && isAgentTextApiProfile(p))
+  const agentProfiles = IS_SITE_MODE ? profiles.filter(isSiteApiProfile) : profiles
+  const firstAgentTextProfile = agentProfiles.find(isAgentTextApiProfile)
+  const agentTextProfileId = typeof record.agentTextProfileId === 'string' && agentProfiles.some((p) => p.id === record.agentTextProfileId && isAgentTextApiProfile(p))
     ? record.agentTextProfileId
-    : (isAgentTextApiProfile(active) ? active.id : firstAgentTextProfile?.id ?? null)
-  const agentImageProfileId = typeof record.agentImageProfileId === 'string' && profiles.some((p) => p.id === record.agentImageProfileId)
+    : (agentProfiles.some((p) => p.id === active.id) && isAgentTextApiProfile(active) ? active.id : firstAgentTextProfile?.id ?? null)
+  const agentImageProfileId = typeof record.agentImageProfileId === 'string' && agentProfiles.some((p) => p.id === record.agentImageProfileId)
     ? record.agentImageProfileId
-    : active.id
+    : agentProfiles.find((p) => p.id === active.id)?.id ?? agentProfiles[0]?.id ?? null
 
   return {
     baseUrl: active.baseUrl,
@@ -936,7 +940,10 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
   })
 }
 
+/** 校验连接归属及生成必需字段，返回可展示的配置错误，不执行网络请求。 */
 export function validateApiProfile(profile: ApiProfile): string | null {
+  const siteError = getSiteProfileError(profile)
+  if (siteError) return siteError
   if (!profile.name.trim()) return '缺少名称'
   if (profile.provider !== 'fal' && !profile.baseUrl.trim() && !shouldUseApiProxy(profile.apiProxy)) return '缺少 API URL'
   if (!profile.apiKey.trim()) return '缺少 API Key'
@@ -1074,6 +1081,7 @@ export function findEquivalentApiProfile(
   return normalized.profiles.find((item) => getApiProfileConnectionKey(item) === connectionKey) ?? null
 }
 
+/** 合并备份或链接配置；本站遇到同 ID 的不同连接时另存，保留原地址和原密钥。 */
 export function mergeImportedSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
@@ -1089,6 +1097,25 @@ export function mergeImportedSettings(
       isDefault: undefined,
     })),
   })
+
+  if (IS_SITE_MODE) {
+    const profiles = [...current.profiles]
+    for (const profile of imported.profiles) {
+      const idx = profiles.findIndex((item) => item.id === profile.id)
+      const existing = profiles[idx]
+      if (existing && (existing.provider !== profile.provider || existing.baseUrl !== profile.baseUrl || existing.apiProxy !== profile.apiProxy)) {
+        profiles.push({ ...profile, id: createImportedProfileId(profile.provider, new Set(profiles.map((item) => item.id))) })
+      } else if (existing) profiles[idx] = profile
+      else profiles.push(profile)
+    }
+    const customProviders = [...current.customProviders]
+    for (const provider of imported.customProviders) {
+      const idx = customProviders.findIndex((item) => item.id === provider.id)
+      if (idx >= 0) customProviders[idx] = provider
+      else customProviders.push(provider)
+    }
+    return normalizeSettings({ ...current, profiles, customProviders })
+  }
 
   if (options.preserveInternalIds) {
     if (hasOnlyDefaultProfiles(current)) return imported
@@ -1172,6 +1199,7 @@ function mergePresetProfileSnapshot(previous: ApiProfile, imported: ApiProfile, 
   return { ...previous, ...patch, id: imported.id, isDefault: imported.isDefault }
 }
 
+/** 合并部署更新并保留用户编辑；本站连接变化时保留旧配置，交由站点策略另建空密钥配置。 */
 export function mergePresetImportedSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
@@ -1223,6 +1251,7 @@ export function mergePresetImportedSettings(
     .map((provider) => provider.id))
   const removableProfileIds = new Set(current.profiles
     .filter((profile) => {
+      if (IS_SITE_MODE) return false
       const previous = previousProfilesById.get(profile.id)
       if (!previous || sourceProfileIds.has(profile.id) || usedPresetProfileIds.has(profile.id) || modifiedProviderIds.has(profile.provider)) return false
       return JSON.stringify({ ...profile, isDefault: undefined }) === JSON.stringify({ ...previous, isDefault: undefined })
@@ -1241,7 +1270,9 @@ export function mergePresetImportedSettings(
     const importedProfile = previous
       ? mergePresetProfileSnapshot(previous, normalizedProfile, fields)
       : normalizedProfile
-    if (!matched) return importedProfile
+    if (!matched) return IS_SITE_MODE ? { ...importedProfile, apiKey: '' } : importedProfile
+    // 同 ID 的旧地址、旧供应商或代理设置不再属于本次部署，不迁移其密钥。
+    if (IS_SITE_MODE && !isSiteApiProfile(matched)) return matched
     if (options.lockPresetParams) return { ...importedProfile, apiKey: matched.apiKey }
     if (!previous) return { ...matched, baseUrl: importedProfile.baseUrl, isDefault: importedProfile.isDefault }
 
