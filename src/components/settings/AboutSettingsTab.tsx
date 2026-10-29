@@ -61,7 +61,7 @@ function AboutCard({ icon, title, children }: { icon: ReactNode; title: string; 
 const CHEVRON = <ChevronRightIcon className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" />
 const EXTERNAL = <ExternalLinkIcon className="h-4 w-4 shrink-0 text-gray-400 dark:text-gray-500" />
 
-/** 展示来源与第三方许可；站点模式隐藏上游更新、赞助和反馈入口。 */
+/** 展示关于页与字体许可入口；站点模式隐藏原项目信息、作者及上游外部入口。 */
 export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLicenses: () => void }) {
   const showToast = useStore((s) => s.showToast)
   const latest = useReleaseUpdates((s) => s.releases[0])
@@ -122,7 +122,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
 
         > 本站点基于开源项目 [GPT Image Playground](https://github.com/CookSleep/gpt_image_playground) ([MIT](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)) 修改。
       */}
-      <div className="flex items-center gap-4 rounded-2xl border border-transparent bg-black/[0.04] p-4 dark:bg-white/[0.06]">
+      {!IS_SITE_MODE && <div className="flex items-center gap-4 rounded-2xl border border-transparent bg-black/[0.04] p-4 dark:bg-white/[0.06]">
         <div className="min-w-0 flex-1">
           <h4 className="text-base font-bold text-gray-800 dark:text-gray-100">
             {IS_SITE_MODE ? 'GPT Image Playground' : <a
@@ -158,7 +158,7 @@ export default function AboutSettingsTab({ onOpenFontLicenses }: { onOpenFontLic
         >
           <GithubIcon className="h-6 w-6" />
         </a>}
-      </div>
+      </div>}
 
       {!IS_SITE_MODE && <AboutCard icon={<RefreshIcon className="h-4 w-4" />} title="版本与更新">
         {hasUpdate && !checking ? (
