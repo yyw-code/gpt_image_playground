@@ -164,8 +164,7 @@ function isProfileApiProxyEligible(settings: AppSettings, profile: ApiProfile) {
   return !isAsyncCustomProvider(customProvider)
 }
 
-/** 编辑用户生成参数；站点预置连接由部署端维护，保留个人密钥输入和 Agent 配置。 */
-/** 管理供应商和 Agent 配置，按供应商能力显示可用设置。 */
+/** 管理供应商和 Agent 配置；本站可切换生图类型，连接始终由部署端维护。 */
 export default function SettingsModal() {
   const showSettings = useStore((s) => s.showSettings)
   const settingsTabRequest = useStore((s) => s.settingsTabRequest)
@@ -285,7 +284,10 @@ export default function SettingsModal() {
     }),
   ]
 
-  const providerOptions = [
+  const providerOptions = siteConnectionManaged ? [
+    { label: 'OpenAI 兼容接口', value: 'openai' },
+    { label: 'Grok（Sub2API）', value: 'grok' },
+  ] : [
     ...(!presetConfigOnly && !activeProfileLocked
       ? [{ label: '创建自定义服务商', value: ADD_CUSTOM_PROVIDER_VALUE, variant: 'action' as const }]
       : []),
@@ -975,8 +977,11 @@ export default function SettingsModal() {
     commitSettings(nextDraft)
   }
 
+  /** 切换协议并保存参数草稿；本站仅允许 OpenAI/Grok，且不从草稿恢复连接目标。 */
   const handleProviderTypeChange = (value: string | number) => {
     if (presetConfigOnly || activeProfileLocked) return
+    if (siteConnectionManaged && value !== 'openai' && value !== 'grok') return
+    if (value === activeProfile.provider) return
     if (value === ADD_CUSTOM_PROVIDER_VALUE) {
       setEditingCustomProviderId(null)
       setCustomProviderJson(DEFAULT_CUSTOM_PROVIDER_JSON)
@@ -987,7 +992,8 @@ export default function SettingsModal() {
 
     const provider = String(value) as ApiProfile['provider']
     const customProvider = getCustomProviderDefinition(draft, provider) ?? undefined
-    updateActiveProfile(switchApiProfileProvider(activeProfile, provider, customProvider), true)
+    const nextProfile = switchApiProfileProvider(activeProfile, provider, customProvider)
+    updateActiveProfile({ ...nextProfile, ...(siteConnectionManaged ? siteConnection : {}) }, true)
   }
 
   const closeCustomProviderModal = () => {
@@ -1507,18 +1513,23 @@ export default function SettingsModal() {
                   <div className="rounded-xl bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 dark:bg-white/[0.06] dark:text-gray-200">NorthByteHub</div>
                 </div>
               )}
-              {/* 2. 服务商类型 */}
-              {!siteConnectionManaged && <div className="block">
-                <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">服务商类型</span>
+              {/* 2. 站点仅开放生图协议选择，不开放其他供应商连接。 */}
+              <div className="block">
+                <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">{siteConnectionManaged ? '生图类型' : '服务商类型'}</span>
                 <Select
                   value={activeProfile.provider}
                   onChange={handleProviderTypeChange}
-                  onReorder={handleProviderReorder}
+                  onReorder={siteConnectionManaged ? undefined : handleProviderReorder}
                   options={providerOptions}
                   disabled={presetConfigOnly || activeProfileLocked}
                   className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
                 />
-              </div>}
+                {siteConnectionManaged && (
+                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
+                    Grok 生图请选择 Grok 类型。切换类型后，请重新填写对应分组的个人 API Key。
+                  </div>
+                )}
+              </div>
 
               {/* 3. API URL */}
               {(siteConnectionManaged || activeProviderUsesApiUrl) && (
