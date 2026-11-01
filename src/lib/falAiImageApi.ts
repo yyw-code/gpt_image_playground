@@ -3,6 +3,7 @@ import type { ApiProfile, FalApiResponse, TaskParams } from '../types'
 import { DEFAULT_FAL_BASE_URL } from './apiProfiles'
 import { isGptImage25Model } from './imageModels'
 import { apiFetch } from './platform'
+import { getSiteProfileError } from './siteProfiles'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -192,12 +193,15 @@ function getFalCustomBaseUrlLabel(profile: ApiProfile): string | null {
   return base.replace(/^https?:\/\//, '')
 }
 
+/** 恢复异步图片任务；本站模式在供应商鉴权或轮询前拒绝旧外站配置。 */
 export async function getFalQueuedImageResult(
   profile: ApiProfile,
   endpoint: string,
   requestId: string,
   params: TaskParams,
 ): Promise<CallApiResult> {
+  const siteError = getSiteProfileError(profile)
+  if (siteError) throw new Error(siteError)
   configureFal(profile)
   await fal.queue.subscribeToStatus(endpoint, { requestId, logs: true })
   const result = await fal.queue.result(endpoint, { requestId })

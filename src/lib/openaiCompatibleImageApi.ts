@@ -2,6 +2,7 @@ import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefi
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import { normalizeGrokImageResult } from './grokImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { getSiteProfileError } from './siteProfiles'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -906,12 +907,15 @@ async function pollCustomTaskResult(
   }
 }
 
+/** 恢复自定义异步任务；轮询前检查本站连接，拒绝使用旧外站密钥。 */
 export async function getCustomQueuedImageResult(
   profile: ApiProfile,
   customProvider: CustomProviderDefinition,
   taskId: string,
   params: TaskParams,
 ): Promise<CallApiResult> {
+  const siteError = getSiteProfileError(profile)
+  if (siteError) throw new Error(siteError)
   if (!customProvider.poll) throw new Error('自定义异步任务缺少 poll 配置')
   const mime = MIME_MAP[params.output_format] || 'image/png'
   return pollCustomTaskResult(profile, customProvider.poll, taskId, mime)
