@@ -1,5 +1,6 @@
 import type { AgentConversation, AgentInputDraft, AppMode, AppSettings, FavoriteCollection, InputImage, MaskDraft, PresetConfig, TaskParams } from '../types'
 import { normalizePresetAgent, normalizeSettings } from './apiProfiles'
+import { normalizeGrokResolution, normalizeGrokAspectRatio } from './grokImage'
 import { normalizeAgentConversations } from './agentConversationState'
 import { ensureDefaultFavoriteCollection, normalizeFavoriteCollections, resolveDefaultFavoriteCollectionId } from './favoriteState'
 import { cleanStaleAgentInputDrafts, getPersistableAgentInputDrafts, isEmptyAgentInputDraft, normalizeAgentInputDraft, normalizeAgentInputDrafts, normalizeAgentInputDraftsByKey, saveGalleryInputDraft } from './inputDraftState'
@@ -72,9 +73,12 @@ function normalizeStringArray(value: unknown, fallback: string[]) {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
+/** 恢复任务参数；Grok 原生几何字段仅在合法时保留，兼容无该字段的旧记录。 */
 function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
   if (!isRecord(value)) return fallback
   return {
+    ...(normalizeGrokResolution(value.resolution) ? { resolution: normalizeGrokResolution(value.resolution) } : {}),
+    ...(normalizeGrokAspectRatio(value.aspect_ratio) ? { aspect_ratio: normalizeGrokAspectRatio(value.aspect_ratio) } : {}),
     size: typeof value.size === 'string' ? value.size : fallback.size,
     quality: value.quality === 'auto' || value.quality === 'low' || value.quality === 'medium' || value.quality === 'high' || value.quality === 'xhigh' || value.quality === 'max'
       ? value.quality

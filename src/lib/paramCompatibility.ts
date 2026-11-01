@@ -2,6 +2,7 @@ import { DEFAULT_PARAMS, type AppSettings, type TaskParams } from '../types'
 import { getActiveApiProfile, isOpenAICompatibleProvider } from './apiProfiles'
 import { getImageGenerationModel, isGptImage25Model } from './imageModels'
 import { normalizeCodexCliImageSize, normalizeImageSize } from './size'
+import { normalizeGrokAspectRatio, normalizeGrokResolution } from './grokImage'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
 export const MAX_FAL_OUTPUT_IMAGES = 4
@@ -11,6 +12,7 @@ export function getOutputImageLimitForSettings(settings: AppSettings) {
   return getActiveApiProfile(settings).provider === 'fal' ? MAX_FAL_OUTPUT_IMAGES : MAX_OPENAI_OUTPUT_IMAGES
 }
 
+/** 根据所选图片配置规范参数；Grok 使用原生几何参数并关闭尚未支持的 GPT 选项。 */
 export function normalizeParamsForSettings(
   params: TaskParams,
   settings: AppSettings,
@@ -22,6 +24,21 @@ export function normalizeParamsForSettings(
     ...params,
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,
     n: Math.min(outputImageLimit, Math.max(1, params.n || DEFAULT_PARAMS.n)),
+  }
+
+  if (activeProfile.provider === 'grok') {
+    return {
+      ...nextParams,
+      n: Math.min(outputImageLimit, Math.max(1, Number.isFinite(params.n) ? Math.trunc(params.n) : 1)),
+      size: 'auto',
+      resolution: normalizeGrokResolution(params.resolution) ?? '1k',
+      aspect_ratio: normalizeGrokAspectRatio(params.aspect_ratio) ?? '1:1',
+      quality: 'auto',
+      output_format: 'png',
+      output_compression: null,
+      moderation: 'auto',
+      transparent_output: false,
+    }
   }
 
   if (isOpenAICompatibleProvider(settings, activeProfile.provider) && activeProfile.codexCli) {

@@ -16,6 +16,7 @@ import type {
   CustomProviderTemplate,
   ReferenceImageEditAction,
   RetryMode,
+  TaskRecord,
 } from '../types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, DEFAULT_ZIP_DOWNLOAD_ROUTES, ZIP_DOWNLOAD_ROUTE_VALUES } from '../types'
 import { customProviderSupportsNativeTransparentBackground } from './customProviderCapabilities'
@@ -26,6 +27,7 @@ import { isImportableConfigUrl } from './importableConfigUrl'
 import { DEFAULT_IMAGES_MODEL } from './imageModels'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from './batchPrompts'
 import { normalizeFontMode } from './fonts'
+import { GROK_IMAGE_MODELS, GROK_IMAGE_PROVIDER } from './grokImage'
 
 const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 const RAW_DEFAULT_API_URL = readRuntimeEnv(import.meta.env.VITE_DEFAULT_API_URL, 'VITE_DEFAULT_API_URL')
@@ -42,7 +44,7 @@ export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_API_TIMEOUT = 600
 
-const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'sb2api-async', 'fal'])
+const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'sb2api-async', 'grok', 'fal'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
   generationPath: 'images/generations',
   editPath: 'images/edits',
@@ -145,10 +147,11 @@ function normalizeZipDownloadRoutes(value: unknown) {
   return value.filter((item): item is typeof ZIP_DOWNLOAD_ROUTE_VALUES[number] => typeof item === 'string' && allowed.has(item))
 }
 
+/** 恢复服务商排序，保留现有顺序并追加新内置服务商。 */
 function normalizeProviderOrder(value: unknown, customProviders: CustomProviderDefinition[]): string[] | undefined {
   if (!Array.isArray(value)) return undefined
 
-  const providerIds = ['openai', 'sb2api-async', 'fal', ...customProviders.map((provider) => provider.id)]
+  const providerIds = ['openai', 'sb2api-async', 'grok', 'fal', ...customProviders.map((provider) => provider.id)]
   const knownIds = new Set(providerIds)
   const ordered = value
     .map(String)
@@ -325,6 +328,7 @@ function createCustomProviderId(name: string, usedIds: Set<string>): string {
   return id
 }
 
+/** 清洗自定义协议并向 usedIds 登记 ID，保留旧 Grok 的迁移标记及原有 Manifest。 */
 export function normalizeCustomProviderDefinition(input: unknown, usedIds = new Set<string>()): CustomProviderDefinition | null {
   if (!input || typeof input !== 'object') return null
   const rawRecord = input as Record<string, unknown>
@@ -341,6 +345,7 @@ export function normalizeCustomProviderDefinition(input: unknown, usedIds = new 
   return {
     id,
     name: rawName,
+    ...(rawRecord.legacyProviderId === 'grok' ? { legacyProviderId: 'grok' as const } : {}),
     template,
     submit: normalizeSubmitMapping(record.submit, {
       path: DEFAULT_CUSTOM_PROVIDER_PATHS.generationPath,
@@ -413,6 +418,7 @@ export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): Ap
   }
 }
 
+/** 切换服务商并保留参数草稿；进入或离开 Grok 时清空当前密钥，要求单独配置。 */
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   const providerDrafts = {
     ...profile.providerDrafts,
@@ -432,9 +438,28 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
   }
   const savedDraft = providerDrafts[provider]
 
+  if (provider === 'grok') {
+    return {
+      ...profile,
+      provider,
+      baseUrl: savedDraft?.baseUrl ?? (profile.provider === 'fal' || profile.baseUrl === OPENAI_DEFAULT_BASE_URL ? '' : profile.baseUrl),
+      apiKey: profile.provider === 'grok' ? profile.apiKey : '',
+      model: savedDraft?.model || GROK_IMAGE_MODELS.join(', '),
+      selectedModel: undefined,
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: savedDraft?.apiProxy ?? false,
+      responseFormatB64Json: true,
+      streamImages: false,
+      transparentBackgroundMethod: 'local',
+      providerDrafts,
+    }
+  }
+
   if (provider === 'fal') {
     return {
       ...profile,
+      apiKey: profile.provider === 'grok' ? '' : profile.apiKey,
       provider,
       baseUrl: savedDraft?.baseUrl ?? DEFAULT_FAL_BASE_URL,
       model: savedDraft?.model ?? DEFAULT_FAL_MODEL,
@@ -456,6 +481,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     const supportsNativeTransparentBackground = customProviderSupportsNativeTransparentBackground(customProvider)
     return {
       ...profile,
+      apiKey: profile.provider === 'grok' ? '' : profile.apiKey,
       provider: customProvider.id,
       baseUrl: savedDraft?.baseUrl ?? (shouldUseOpenAIDefaults ? DEFAULT_BASE_URL : profile.baseUrl || DEFAULT_BASE_URL),
       model: savedDraft?.model ?? (shouldUseOpenAIDefaults ? DEFAULT_IMAGES_MODEL : profile.model || DEFAULT_IMAGES_MODEL),
@@ -482,6 +508,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
 
   return {
     ...profile,
+    apiKey: profile.provider === 'grok' ? '' : profile.apiKey,
     provider,
     baseUrl: savedDraft?.baseUrl ?? DEFAULT_BASE_URL,
     model: savedDraft?.model ?? DEFAULT_IMAGES_MODEL,
@@ -498,6 +525,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
   }
 }
 
+/** 清洗服务商草稿，导入的 Grok 配置始终使用同步 Images 协议。 */
 function normalizeProviderDraft(
   input: unknown,
   provider: ApiProvider,
@@ -505,7 +533,7 @@ function normalizeProviderDraft(
   nativeTransparentProviderIds: Set<string>,
 ): ApiProfileProviderDraft {
   if (!isRecord(input)) return undefined
-  const nativeTransparentBackgroundUnavailable = customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider)
+  const nativeTransparentBackgroundUnavailable = provider === 'grok' || (customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider))
   const transparentBackgroundMethod = nativeTransparentBackgroundUnavailable ? 'local' : 'api'
   const fallback = provider === 'fal'
     ? createDefaultFalProfile()
@@ -521,14 +549,14 @@ function normalizeProviderDraft(
     baseUrl: provider === 'fal'
       ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
       : baseUrl,
-    model,
+    model: provider === 'grok' ? model || GROK_IMAGE_MODELS.join(', ') : model,
     imageGenerationModel,
-    apiMode,
+    apiMode: provider === 'grok' ? 'images' : apiMode,
     reasoningEffort: normalizeReasoningEffort(input.reasoningEffort),
-    codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
+    codexCli: provider === 'grok' ? false : typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
-    responseFormatB64Json: input.responseFormatB64Json === true ? true : undefined,
-    streamImages: typeof input.streamImages === 'boolean' ? input.streamImages : fallback.streamImages,
+    responseFormatB64Json: provider === 'grok' || input.responseFormatB64Json === true ? true : undefined,
+    streamImages: provider === 'grok' ? false : typeof input.streamImages === 'boolean' ? input.streamImages : fallback.streamImages,
     streamPartialImages: normalizeStreamPartialImages(input.streamPartialImages, fallback.streamPartialImages),
     transparentBackgroundMethod: !nativeTransparentBackgroundUnavailable && (input.transparentBackgroundMethod === 'api' || input.transparentBackgroundMethod === 'local')
       ? input.transparentBackgroundMethod
@@ -549,6 +577,7 @@ function normalizeProviderDrafts(
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
+/** 规范化持久化或导入的配置，保留旧供应商行为并约束 Grok 的专属能力。 */
 export function normalizeApiProfile(
   input: unknown,
   fallback?: Partial<ApiProfile>,
@@ -564,12 +593,16 @@ export function normalizeApiProfile(
     : fallback
   const defaults = provider === 'fal'
     ? createDefaultFalProfile(providerFallback)
-    : createDefaultOpenAIProfile({ ...providerFallback, apiMode })
+    : createDefaultOpenAIProfile({
+        ...providerFallback,
+        apiMode,
+        ...(provider === 'grok' ? { baseUrl: '', apiKey: '', model: GROK_IMAGE_MODELS.join(', '), transparentBackgroundMethod: 'local' as const } : {}),
+      })
   const rawBaseUrl = typeof record.baseUrl === 'string' ? record.baseUrl : defaults.baseUrl
   const streamImages = provider === 'openai'
     ? typeof record.streamImages === 'boolean' ? record.streamImages : defaults.streamImages
     : false
-  const nativeTransparentBackgroundUnavailable = customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider)
+  const nativeTransparentBackgroundUnavailable = provider === 'grok' || (customProviderIds.has(provider) && !nativeTransparentProviderIds.has(provider))
 
   return {
     ...defaults,
@@ -588,9 +621,9 @@ export function normalizeApiProfile(
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     apiMode,
     reasoningEffort: normalizeReasoningEffort(record.reasoningEffort, defaults.reasoningEffort),
-    codexCli: Boolean(record.codexCli),
+    codexCli: provider !== 'grok' && Boolean(record.codexCli),
     apiProxy: provider === 'sb2api-async' ? false : typeof record.apiProxy === 'boolean' ? record.apiProxy : defaults.apiProxy,
-    responseFormatB64Json: record.responseFormatB64Json === true ? true : undefined,
+    responseFormatB64Json: provider === 'grok' || record.responseFormatB64Json === true ? true : undefined,
     streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, defaults.streamPartialImages),
     transparentBackgroundMethod: !nativeTransparentBackgroundUnavailable && (record.transparentBackgroundMethod === 'api' || record.transparentBackgroundMethod === 'local')
@@ -676,8 +709,45 @@ function normalizeDeploymentProfileEntries(input: unknown, customProviderIds: Se
   })
 }
 
+/** 迁移新增内置 Grok 前的同名自定义服务商；同步改写配置、草稿和排序引用，不修改传入数据。 */
+function migrateLegacyGrokProviderConfig(record: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(record.customProviders)) return record
+  const legacy = record.customProviders.find((provider) => isRecord(provider) && typeof provider.id === 'string' && provider.id.trim() === 'grok')
+  if (!legacy || !normalizeCustomProviderDefinition(legacy)) return record
+
+  const usedIds = new Set(record.customProviders.flatMap((provider) =>
+    isRecord(provider) && typeof provider.id === 'string' ? [provider.id.trim()] : [],
+  ))
+  const id = createCustomProviderId('legacy-grok', usedIds)
+  return {
+    ...record,
+    customProviders: record.customProviders.map((provider) => isRecord(provider) && typeof provider.id === 'string' && provider.id.trim() === 'grok' ? { ...provider, id, legacyProviderId: 'grok' } : provider),
+    profiles: Array.isArray(record.profiles) ? record.profiles.map((profile) => {
+      if (!isRecord(profile)) return profile
+      const drafts = profile.providerDrafts
+      return {
+        ...profile,
+        provider: profile.provider === 'grok' ? id : profile.provider,
+        ...(isRecord(drafts) && Object.prototype.hasOwnProperty.call(drafts, 'grok')
+          ? { providerDrafts: Object.fromEntries(Object.entries(drafts).map(([provider, draft]) => [provider === 'grok' ? id : provider, draft])) }
+          : {}),
+      }
+    }) : record.profiles,
+    providerOrder: Array.isArray(record.providerOrder) ? record.providerOrder.map((provider) => provider === 'grok' ? id : provider) : record.providerOrder,
+  }
+}
+
+/** 按原 API 配置 ID 修复旧 Grok 自定义任务的服务商引用；缺少迁移标记时保持原记录。 */
+export function migrateLegacyGrokTask(task: TaskRecord, settings: AppSettings): TaskRecord {
+  if (task.apiProvider !== 'grok') return task
+  const profile = settings.profiles.find((item) => item.id === task.apiProfileId)
+  const provider = settings.customProviders.find((item) => item.id === profile?.provider && item.legacyProviderId === 'grok')
+  return provider ? { ...task, apiProvider: provider.id } : task
+}
+
+/** 恢复配置并迁移旧同名自定义服务商，保留 API 配置 ID 供历史任务继续引用。 */
 export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSettings {
-  const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const record = migrateLegacyGrokProviderConfig(input && typeof input === 'object' ? input as Record<string, unknown> : {})
   const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
   const customProviderIds = new Set(customProviders.map((provider) => provider.id))
   const nativeTransparentProviderIds = new Set(customProviders.filter(customProviderSupportsNativeTransparentBackground).map((provider) => provider.id))
@@ -780,8 +850,10 @@ export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown
   return profile ? resolveApiProfileModel(profile) : null
 }
 
+/** 返回内置或用户定义的 HTTP 图片协议，供请求及能力检查复用。 */
 export function getCustomProviderDefinition(settings: Partial<AppSettings> | unknown, provider: ApiProvider): CustomProviderDefinition | null {
   if (provider === 'sb2api-async') return SUB2API_PROVIDER
+  if (provider === 'grok') return GROK_IMAGE_PROVIDER
   const normalized = normalizeSettings(settings)
   return normalized.customProviders.find((item) => item.id === provider) ?? null
 }
@@ -838,6 +910,7 @@ function stripMarkdownCodeFence(text: string): string {
   return match ? match[1].trim() : trimmed
 }
 
+/** 导入配置或部署预置；先迁移旧同名 Grok，再校验协议、配置引用及默认项，无外部写入。 */
 export function importCustomProviderSettingsFromJson(
   jsonText: string,
   existingProviders: CustomProviderDefinition[] = [],
@@ -854,7 +927,7 @@ export function importCustomProviderSettingsFromJson(
     throw new Error('JSON 根节点必须是对象')
   }
 
-  const record = parsed as Record<string, unknown>
+  const record = migrateLegacyGrokProviderConfig(parsed as Record<string, unknown>)
 
   // 包裹结构：profiles 可独立于自定义服务商配置导入。
   if (Array.isArray(record.profiles) || Array.isArray(record.customProviders)) {
@@ -882,9 +955,10 @@ export function importCustomProviderSettingsFromJson(
   }
 
   // 单个 Manifest 对象：{name, submit, ...}
-  if (options.deploymentConfig) validateDeploymentProviderIds([parsed])
+  const directInput = (migrateLegacyGrokProviderConfig({ customProviders: [parsed] }).customProviders as unknown[])[0]
+  if (options.deploymentConfig) validateDeploymentProviderIds([directInput])
   const usedIds = new Set(existingProviders.map((provider) => provider.id))
-  const direct = normalizeCustomProviderDefinition(parsed, usedIds)
+  const direct = normalizeCustomProviderDefinition(directInput, usedIds)
   if (direct) {
     validateCustomProviderTaskMappings([direct])
     return { customProviders: [direct], profiles: [] }
@@ -914,6 +988,7 @@ export function resolveApiProfileModel(profile: ApiProfile, preferred?: string):
   return { ...profile, model }
 }
 
+/** 读取当前配置及兼容的旧镜像字段；Grok 始终关闭 Codex 参数注入。 */
 export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
   const record = settings && typeof settings === 'object' ? settings as Record<string, unknown> : {}
   const normalized = normalizeSettings(settings)
@@ -929,7 +1004,7 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
     model: typeof record.model === 'string' && record.model.trim() ? record.model : profile.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : profile.timeout,
     apiMode,
-    codexCli: typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli,
+    codexCli: profile.provider !== 'grok' && (typeof record.codexCli === 'boolean' ? record.codexCli : profile.codexCli),
     apiProxy: typeof record.apiProxy === 'boolean' ? record.apiProxy : profile.apiProxy,
     streamImages: profile.provider === 'openai' && typeof record.streamImages === 'boolean' ? record.streamImages : profile.streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, profile.streamPartialImages),
@@ -1172,6 +1247,7 @@ function mergePresetProfileSnapshot(previous: ApiProfile, imported: ApiProfile, 
   return { ...previous, ...patch, id: imported.id, isDefault: imported.isDefault }
 }
 
+/** 合并部署预置并迁移旧 Grok ID，按原有策略保留用户覆盖字段，返回配置及预置快照。 */
 export function mergePresetImportedSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
@@ -1183,9 +1259,9 @@ export function mergePresetImportedSettings(
     usedPresetProfileIds?: string[]
   } = {},
 ): { settings: AppSettings; presetConfig: PresetConfig } {
-  const importedRecord = isRecord(importedSettings) ? importedSettings : {}
+  const importedRecord = migrateLegacyGrokProviderConfig(isRecord(importedSettings) ? importedSettings : {})
   validateDeploymentProviderIds(importedRecord.customProviders)
-  const normalizedImported = normalizeSettings(importedSettings)
+  const normalizedImported = normalizeSettings(importedRecord)
   const current = normalizeSettings(currentSettings)
   const customProviderIds = new Set(normalizedImported.customProviders.map((provider) => provider.id))
   const nativeTransparentProviderIds = new Set(normalizedImported.customProviders.filter(customProviderSupportsNativeTransparentBackground).map((provider) => provider.id))

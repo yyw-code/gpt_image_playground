@@ -5,6 +5,7 @@ import { DEFAULT_PARAMS, MAX_INPUT_IMAGES, type TaskRecord } from '../types'
 import { getActiveAgentRounds } from '../lib/agentConversationState'
 import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
 import { getImageGenerationModel, isGptImage25Model } from '../lib/imageModels'
+import { MAX_GROK_INPUT_IMAGES } from '../lib/grokImage'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { splitBatchPrompts } from '../lib/batchPrompts'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
@@ -85,6 +86,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
+/** 维护输入草稿并按当前图片配置展示能力及参考图限制。 */
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
@@ -509,22 +511,24 @@ export default function InputBar() {
   }, [setPrompt])
   const activeProvider = activeProfile.provider
   const isFalProvider = activeProvider === 'fal'
+  const isGrokProvider = activeProvider === 'grok'
+  const inputImageLimit = isGrokProvider ? MAX_GROK_INPUT_IMAGES : MAX_INPUT_IMAGES
   const agentAutoImageCount = appMode === 'agent'
-  const moderationDisabled = isFalProvider
-  const transparentOutputAvailable = appMode === 'gallery'
+  const moderationDisabled = isFalProvider || isGrokProvider
+  const transparentOutputAvailable = appMode === 'gallery' && !isGrokProvider
   const showTransparentOutputControl = transparentOutputAvailable && (params.output_format === 'png' || params.output_format === 'webp')
   const transparentOutputEnabled = transparentOutputAvailable && showTransparentOutputControl && params.transparent_output
-  const compressionDisabled = params.output_format === 'png' || isFalProvider
+  const compressionDisabled = params.output_format === 'png' || isFalProvider || isGrokProvider
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
   const isFalTextToImage = isFalProvider && inputImages.length === 0
   const nDraftValue = Number(nInput)
   const effectiveNValue = Number.isNaN(nDraftValue) ? params.n : nDraftValue
-  const streamConcurrentByN = activeProfile.provider === 'openai' && activeProfile.streamImages === true && !agentAutoImageCount && effectiveNValue > 1
+  const streamConcurrentByN = (isGrokProvider || (activeProfile.provider === 'openai' && activeProfile.streamImages === true)) && !agentAutoImageCount && effectiveNValue > 1
   const nLimitHintText = agentAutoImageCount
     ? 'Agent 模式下数量由模型根据提示词自动决定'
     : isFalProvider
     ? `fal.ai 最大请求数量为 ${outputImageLimit}`
-    : `OpenAI 最大请求数量为 ${outputImageLimit}`
+    : `${isGrokProvider ? 'Grok' : 'OpenAI'} 最大请求数量为 ${outputImageLimit}`
   const displaySize = isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
     : (activeProfile.codexCli ? normalizeCodexCliImageSize(params.size) : normalizeImageSize(params.size)) || DEFAULT_PARAMS.size
@@ -541,8 +545,8 @@ export default function InputBar() {
         ]
       : []),
   ]
-  const atImageLimit = inputImages.length >= MAX_INPUT_IMAGES
-  const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${MAX_INPUT_IMAGES} 张），无法继续添加` : '添加图片'
+  const atImageLimit = inputImages.length >= inputImageLimit
+  const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${inputImageLimit} 张），无法继续添加` : '添加图片'
   const transparentOutputHint = useHintTooltip()
   const handleTransparentOutputMenuOpenChange = useCallback((open: boolean) => {
     if (open) transparentOutputHint.hide()
@@ -844,19 +848,24 @@ export default function InputBar() {
     window.addEventListener('dragend', release)
   }
 
+  /** 添加参考图；Grok 超限时保留完整原草稿并拒绝本次添加，避免静默截断。 */
   const handleFiles = async (files: FileList | File[]) => {
     try {
       const currentCount = useStore.getState().inputImages.length
-      if (currentCount >= MAX_INPUT_IMAGES) {
+      if (currentCount >= inputImageLimit) {
         useStore.getState().showToast(
-          `参考图数量已达上限（${MAX_INPUT_IMAGES} 张），无法继续添加`,
+          `参考图数量已达上限（${inputImageLimit} 张），无法继续添加`,
           'error',
         )
         return
       }
 
-      const remaining = MAX_INPUT_IMAGES - currentCount
+      const remaining = inputImageLimit - currentCount
       const accepted = Array.from(files).filter((f) => f.type.startsWith('image/'))
+      if (isGrokProvider && accepted.length > remaining) {
+        useStore.getState().showToast(`Grok 最多支持 ${inputImageLimit} 张参考图，本次添加未执行，请减少图片后重试。`, 'error')
+        return
+      }
       const toAdd = accepted.slice(0, remaining)
       const discarded = accepted.length - toAdd.length
 
@@ -866,7 +875,7 @@ export default function InputBar() {
 
       if (discarded > 0) {
         useStore.getState().showToast(
-          `已达上限 ${MAX_INPUT_IMAGES} 张，${discarded} 张图片被丢弃`,
+          `已达上限 ${inputImageLimit} 张，${discarded} 张图片被丢弃`,
           'error',
         )
       }
@@ -1727,7 +1736,7 @@ export default function InputBar() {
 
   return (
     <>
-      <DragUploadOverlay visible={isDragging} atImageLimit={atImageLimit} maxImages={MAX_INPUT_IMAGES} />
+      <DragUploadOverlay visible={isDragging} atImageLimit={atImageLimit} maxImages={inputImageLimit} />
 
       {showSizePicker && (
         <SizePickerModal

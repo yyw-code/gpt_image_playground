@@ -60,6 +60,7 @@ function TaskActionButton({
   )
 }
 
+/** 展示任务结果及供应商原生参数，保留历史任务操作入口。 */
 export default function TaskCard({
   task,
   onReuse,
@@ -309,8 +310,9 @@ export default function TaskCard({
       : 'bg-blue-500'
     : 'bg-gray-200 dark:bg-gray-700'
 
+  const isGrok = task.apiProvider === 'grok'
   const qualityDisplay = getParamDisplay(task, 'quality')
-  const showQuality = task.params.quality !== 'auto' || qualityDisplay.isMismatch
+  const showQuality = !isGrok && (task.params.quality !== 'auto' || qualityDisplay.isMismatch)
 
   const sizeDisplay = getParamDisplay(task, 'size')
   const showSize = task.params.size !== 'auto' || sizeDisplay.isMismatch
@@ -612,6 +614,11 @@ export default function TaskCard({
                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
                   <span className="text-gray-400 dark:text-gray-500">质量</span>
                   {qualityDisplay.isMismatch ? <ActualValueBadge value={qualityDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{qualityDisplay.displayValue}</span>}
+                </span>
+              )}
+              {isGrok && (
+                <span className="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs text-gray-600 dark:text-gray-300">
+                  {task.params.resolution?.toUpperCase() ?? '1K'} · {task.params.aspect_ratio ?? '1:1'}
                 </span>
               )}
               {showSize && (

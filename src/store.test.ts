@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
-import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
+import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, migrateLegacyGrokTask, normalizeSettings } from './lib/apiProfiles'
 import type { AgentConversation, ExportData, StoredImage, StoredImageThumbnail, TaskRecord } from './types'
 import { getSelectedImageMentionLabel } from './lib/promptImageMentions'
 import { hasActiveDataOperations, hasInterruptibleOperations, trackDataTransfer } from './lib/dataOperations'
@@ -5888,5 +5888,177 @@ describe('client connection errors', () => {
     const error = useStore.getState().tasks[0].error!
     if (hinted) expect(error.startsWith(`${reason}\n提示：请求等待约 60 秒后被断开`)).toBe(true)
     else expect(error).toBe(reason)
+  })
+})
+
+
+describe('Grok task lifecycle', () => {
+  const grokProfile = { id: 'grok-profile', name: 'Grok', provider: 'grok', baseUrl: 'https://relay.example/v1', apiKey: 'grok-test-key', model: 'grok-imagine-image' }
+  const textProfile = createDefaultOpenAIProfile({ id: 'grok-text-profile', baseUrl: 'https://relay.example/v1', apiKey: 'text-test-key', apiMode: 'responses', model: DEFAULT_RESPONSES_MODEL })
+
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    await clearAgentConversations()
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: ['data:image/jpeg;base64,grok-result'], actualParamsList: [{ output_format: 'jpeg' }] })
+    vi.mocked(callAgentResponsesApi).mockReset()
+    useStore.setState({
+      settings: normalizeSettings({ profiles: [grokProfile, textProfile], activeProfileId: grokProfile.id }),
+      prompt: 'Grok test', params: { ...DEFAULT_PARAMS, resolution: '2k', aspect_ratio: '16:9' },
+      tasks: [], inputImages: [], maskDraft: null, maskEditorImageId: null,
+      appMode: 'gallery', agentConversations: [], activeAgentConversationId: null, agentEditingRoundId: null,
+      reusedTaskApiProfileId: null, reusedTaskApiProfileName: null, reusedTaskApiProfileMissing: false, reusedTaskApiModel: null,
+      batchProgress: null, showToast: vi.fn(), confirmDialog: null,
+    })
+  })
+
+  it.each(['mask', 'references'])('rejects unsupported gallery %s without saving inputs or changing the draft', async (kind) => {
+    const images = kind === 'mask' ? [imageA] : [imageA, imageB, { ...imageA, id: 'c' }, { ...imageB, id: 'd' }]
+    const mask = kind === 'mask' ? { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 } : null
+    useStore.setState({ inputImages: images, maskDraft: mask })
+    await submitTask()
+    expect(useStore.getState().tasks).toEqual([])
+    expect(await getAllImageIds()).toEqual([])
+    expect(useStore.getState().inputImages).toEqual(images)
+    expect(useStore.getState().maskDraft).toEqual(mask)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining(kind === 'mask' ? '遮罩' : '3 张'), 'error')
+  })
+
+  it.each([200, 500])('does not start queued Grok requests after deletion when the first batch returns HTTP %s', async (status) => {
+    const { callImageApi: realCallImageApi } = await vi.importActual<typeof import('./lib/api')>('./lib/api')
+    const firstBatch = deferred<void>()
+    const settled = deferred<void>()
+    vi.mocked(callImageApi).mockImplementation(async (opts) => {
+      try {
+        return await realCallImageApi(opts)
+      } finally {
+        settled.resolve()
+      }
+    })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await firstBatch.promise
+      return new Response(JSON.stringify(status === 200 ? { data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUg==' }] } : { error: { message: 'failed' } }), { status })
+    })
+    try {
+      useStore.setState({ params: { ...DEFAULT_PARAMS, n: 4 } })
+      await submitTask()
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      await removeTask(useStore.getState().tasks[0])
+      firstBatch.resolve()
+      await settled.promise
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(useStore.getState().tasks).toEqual([])
+      expect(await getAllTasks()).toEqual([])
+    } finally {
+      firstBatch.resolve()
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('preserves native geometry through saved tasks, reuse, and retry', async () => {
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    const original = useStore.getState().tasks[0]
+    expect(original).toMatchObject({ apiProvider: 'grok', params: { resolution: '2k', aspect_ratio: '16:9' } })
+    expect((await getAllTasks())[0].params).toMatchObject({ resolution: '2k', aspect_ratio: '16:9' })
+    await reuseConfig(original)
+    expect(useStore.getState().params).toMatchObject({ resolution: '2k', aspect_ratio: '16:9' })
+    await retryTask(original)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(callImageApi).mock.calls[1][0].params).toMatchObject({ resolution: '2k', aspect_ratio: '16:9' })
+    await vi.waitFor(() => expect(useStore.getState().tasks.every((item) => item.status === 'done')).toBe(true))
+  })
+
+  it('rejects masks before creating an Agent conversation or saving images', async () => {
+    const mask = { targetImageId: imageA.id, maskDataUrl: 'data:image/png;base64,mask', updatedAt: 1 }
+    useStore.setState({
+      settings: normalizeSettings({ profiles: [grokProfile, textProfile], activeProfileId: textProfile.id, agentApiConfigMode: 'hybrid', agentTextProfileId: textProfile.id, agentImageProfileId: grokProfile.id }),
+      appMode: 'agent', inputImages: [imageA], maskDraft: mask,
+    })
+    await submitAgentMessage()
+    expect(useStore.getState().agentConversations).toEqual([])
+    expect(useStore.getState().maskDraft).toEqual(mask)
+    expect(await getAllImageIds()).toEqual([])
+    expect(callAgentResponsesApi).not.toHaveBeenCalled()
+  })
+
+  it('routes the Agent image function to Grok while keeping text credentials separate', async () => {
+    useStore.setState({
+      settings: normalizeSettings({ profiles: [grokProfile, textProfile], activeProfileId: textProfile.id, agentApiConfigMode: 'hybrid', agentTextProfileId: textProfile.id, agentImageProfileId: grokProfile.id, agentMaxToolRounds: 2 }),
+      appMode: 'agent',
+    })
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({ text: '', images: [], outputItems: [{ type: 'function_call', name: 'generate_image', call_id: 'grok-call', arguments: JSON.stringify({ id: 'grok-image', prompt: 'a cat' }) }], responseId: 'grok-text-1' })
+      .mockResolvedValueOnce({ text: 'done', images: [], outputItems: [], responseId: 'grok-text-2' })
+    await submitAgentMessage()
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
+    const request = vi.mocked(callImageApi).mock.calls[0][0]
+    expect(request.settings.apiKey).toBe('grok-test-key')
+    expect(request.params).toMatchObject({ resolution: '2k', aspect_ratio: '16:9', n: 1 })
+    expect(vi.mocked(callAgentResponsesApi).mock.calls[0][0].profile.apiKey).toBe('text-test-key')
+    await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]?.status).toBe('done'))
+    expect(useStore.getState().tasks[0]).toMatchObject({ apiProvider: 'grok', status: 'done' })
+  })
+
+  it('restores Grok geometry and profile identity from a ZIP manifest', async () => {
+    const original = task({ apiProvider: 'grok', apiProfileId: grokProfile.id, params: { ...DEFAULT_PARAMS, resolution: '2k', aspect_ratio: '9:16' } })
+    const imported = await importData(importFile({ version: 3, exportedAt: new Date(0).toISOString(), settings: useStore.getState().settings, tasks: [original] }), { importConfig: true, importTasks: true })
+    expect(imported).toBe(true)
+    expect(useStore.getState().tasks[0]).toMatchObject({ apiProvider: 'grok', params: { resolution: '2k', aspect_ratio: '9:16' } })
+    expect(useStore.getState().settings.profiles.find((profile) => profile.id === grokProfile.id)?.provider).toBe('grok')
+  })
+
+  it('does not migrate built-in Grok tasks or tasks whose original profile is missing', () => {
+    const original = task({ apiProvider: 'grok', apiProfileId: grokProfile.id })
+    expect(migrateLegacyGrokTask(original, useStore.getState().settings)).toBe(original)
+    const legacy = normalizeSettings({
+      customProviders: [{ id: 'grok', name: 'Legacy', submit: { path: 'legacy/image' } }],
+      profiles: [{ ...grokProfile, id: 'other-profile' }],
+    })
+    expect(migrateLegacyGrokTask(original, legacy)).toBe(original)
+  })
+
+  it.each(['local', 'zip'])('preserves a legacy custom Grok task and its retry protocol after %s restore', async (mode) => {
+    const legacySettings = {
+      ...useStore.getState().settings,
+      customProviders: [{ id: 'grok', name: 'Legacy Grok', submit: { path: 'custom/image', body: { prompt: '$prompt', legacy: true } } }],
+      profiles: [{ ...useStore.getState().settings.profiles[0], id: 'legacy-profile', model: 'legacy-model' }],
+      activeProfileId: 'legacy-profile',
+    }
+    const original = task({ apiProvider: 'grok', apiProfileId: 'legacy-profile', apiModel: 'legacy-model' })
+    if (mode === 'local') {
+      useStore.setState({ settings: normalizeSettings(legacySettings) })
+      await putDbTask(original)
+      await initStore()
+    } else {
+      expect(await importData(importFile({ version: 3, exportedAt: new Date(0).toISOString(), settings: legacySettings, tasks: [original] }), { importConfig: true, importTasks: true })).toBe(true)
+    }
+    const restored = useStore.getState().tasks[0]
+    const customId = useStore.getState().settings.customProviders[0].id
+    expect(restored).toMatchObject({ apiProvider: customId, apiProfileId: 'legacy-profile' })
+    expect((await getAllTasks())[0].apiProvider).toBe(customId)
+    expect(getTaskApiProfile(useStore.getState().settings, restored)).toMatchObject({ provider: customId, model: 'legacy-model' })
+    // 使用真实分派逻辑和模拟 HTTP，确认历史重试没有进入内置 Grok 参数校验或路径。
+    const { callImageApi: realCallImageApi } = await vi.importActual<typeof import('./lib/api')>('./lib/api')
+    vi.mocked(callImageApi).mockImplementation(realCallImageApi)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUg==' }] })))
+    try {
+      useStore.getState().setSettings({ activeProfileId: 'legacy-profile' })
+      await retryTask(restored)
+      await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+      expect(String(fetchMock.mock.calls[0][0])).toBe('https://relay.example/v1/custom/image')
+      expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).legacy).toBe(true)
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('rejects a historical mask when retrying with Grok before creating a task', async () => {
+    const original = task({ maskImageId: 'old-mask', inputImageIds: [imageA.id] })
+    useStore.setState({ tasks: [original] })
+    await retryTask(original)
+    expect(useStore.getState().tasks).toEqual([original])
+    expect(callImageApi).not.toHaveBeenCalled()
   })
 })

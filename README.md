@@ -631,6 +631,18 @@ VITE_DEFAULT_API_URL=https://你的域名?settings=%7B%22profiles%22%3A%5B...%5D
 ---
 
 <a id="custom-provider-config"></a>
+### Grok 图片生成（Sub2API）
+
+在设置中新增独立 API 配置，服务商选择 **Grok（Sub2API）**，填写自己的 Sub2API 地址（如 `https://api.example.com/v1`）和绑定 **Grok 分组** 的个人密钥。不要使用只允许 GPT/Codex 分组的密钥；切换到或离开 Grok 服务商时会清空当前密钥，建议分别保留 GPT 和 Grok 配置。
+
+内置模型为 `grok-imagine-image`、`grok-imagine-image-2.0` 和 `grok-imagine-image-quality`，可在输入栏选择。支持文生图及最多 3 张参考图编辑，使用同步 `images/generations` / `images/edits` 接口。编辑请求以 JSON `images` 数组发送参考图，需 Sub2API 版本支持对应 Grok 路由。
+
+Grok 使用 1K / 2K 分辨率及原生宽高比参数，默认 1K、1:1。图片保留接口返回的 PNG、JPEG 或 WebP 格式，不提供 GPT 的质量、压缩率、审核、透明背景和遮罩参数。切换配置后已有遮罩或超限参考图会保留，提交时提示先调整草稿。
+
+数量大于 1 时拆为独立单图请求，每批最多并发 2 张，保留成功图片及单张失败信息；不会自动重试失败的生图请求。历史记录、配置复用、重试和 ZIP 备份沿用原有入口，保留分辨率与比例。
+
+预置示例见 [`gpt-image-config.grok.example.json`](gpt-image-config.grok.example.json)，同时提供 GPT、Grok 和 Agent 文本配置，未包含密钥。Agent 使用混合模式，将文本配置与 Grok 图片配置分别选择；请自行填写可用文本模型及对应分组密钥。示例只是配置文件，不会自动更新已部署站点。
+
 ## 🔌 自定义供应商
 
 API 不是标准 OpenAI 格式时，在预置 JSON 的 `customProviders` 中定义请求和响应结构。每个供应商需有唯一的 `id`，由 `profiles` 中的 `provider` 字段引用。

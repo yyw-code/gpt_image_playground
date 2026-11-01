@@ -1,5 +1,6 @@
 import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
+import { normalizeGrokImageResult } from './grokImage'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import {
   assertImageInputPayloadSize,
@@ -436,6 +437,7 @@ async function parseResponsesApiStreamResponse(
   }
 }
 
+/** 按配置派发同步或异步图片请求；Grok 多图以独立单图请求保留部分成功结果。 */
 export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
   if (customProvider) {
     const n = opts.params.n > 0 ? opts.params.n : 1
@@ -443,7 +445,7 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
       ? customProvider.editSubmit
       : customProvider.submit
     const isAsync = Boolean(submitMapping.taskIdPath)
-    if (profile.codexCli && n > 1 && !isAsync) return callCustomHttpImageApiConcurrent(opts, profile, customProvider, n)
+    if ((profile.codexCli || profile.provider === 'grok') && n > 1 && !isAsync) return callCustomHttpImageApiConcurrent(opts, profile, customProvider, n)
     return callCustomHttpImageApi(opts, profile, customProvider)
   }
 
@@ -915,6 +917,7 @@ export async function getCustomQueuedImageResult(
   return pollCustomTaskResult(profile, customProvider.poll, taskId, mime)
 }
 
+/** 根据 Manifest 提交图片请求；Grok 在独立请求内校验图片格式，使多图可保留部分成功。 */
 async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider: CustomProviderDefinition): Promise<CallApiResult> {
   const { params, inputImageDataUrls } = opts
   const isEdit = inputImageDataUrls.length > 0
@@ -940,7 +943,10 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
       ;(err as any).rawResponsePayload = JSON.stringify(submitPayload, null, 2)
       throw err
     }
-    if (!taskId) return await extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
+    if (!taskId) {
+      const result = await extractCustomImages(submitPayload, submitMapping.result ?? {}, mime, controller.signal)
+      return profile.provider === 'grok' ? normalizeGrokImageResult(result) : result
+    }
     if (!customProvider.poll) throw new Error('异步接口返回了 task_id，但服务商配置缺少 poll')
     opts.onCustomTaskEnqueued?.({ taskId })
     if (timeoutId) {
@@ -984,16 +990,23 @@ function mergeConcurrentApiResults(results: PromiseSettledResult<CallApiResult>[
   }
 }
 
+/** 合并独立请求结果；Grok 每批最多并发两张，任务失效时停止后续批次，其他失败保留成功图片。 */
 async function callCustomHttpImageApiConcurrent(
   opts: CallApiOptions,
   profile: ApiProfile,
   customProvider: CustomProviderDefinition,
   n: number,
 ): Promise<CallApiResult> {
-  const results = await Promise.allSettled(Array.from({ length: n }).map(() => callCustomHttpImageApi({
-    ...opts,
-    params: { ...opts.params, n: 1 },
-  }, profile, customProvider)))
+  const results: PromiseSettledResult<CallApiResult>[] = []
+  const concurrency = profile.provider === 'grok' ? 2 : n
+  for (let offset = 0; offset < n; offset += concurrency) {
+    if (opts.isCancelled?.()) throw new DOMException('任务已取消', 'AbortError')
+    const batch = await Promise.allSettled(Array.from({ length: Math.min(concurrency, n - offset) }).map(() => callCustomHttpImageApi({
+      ...opts,
+      params: { ...opts.params, n: 1 },
+    }, profile, customProvider)))
+    results.push(...batch)
+  }
   return mergeConcurrentApiResults(results)
 }
 

@@ -21,6 +21,8 @@ export interface CallApiOptions {
   inputImageDataUrls: string[]
   maskDataUrl?: string
   skipCodexCliSizePrompt?: boolean
+  /** 返回任务是否已失效；分批生成在提交下一批前检查，避免继续产生费用。 */
+  isCancelled?: () => boolean
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void

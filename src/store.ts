@@ -23,7 +23,7 @@ import type {
   StoredImageThumbnail,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, migrateLegacyGrokTask, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
 import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProviderIds, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { getTaskPromptText, remapImageMentionsForOrder, replaceImageMentionsForApi, stripImageMentionMarkers } from './lib/promptImageMentions'
@@ -58,6 +58,7 @@ import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
+import { getGrokImageInputError } from './lib/grokImage'
 import { runWithConcurrency, splitBatchPrompts } from './lib/batchPrompts'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
@@ -1119,9 +1120,11 @@ function genId(): string {
   return Date.now().toString(36) + (++uid).toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
+/** 持久化前修复旧 Grok 服务商引用并清理原始响应载荷，返回兼容历史记录。 */
 function getPersistableTask(task: TaskRecord): TaskRecord {
-  const rawResponsePayload = getPersistableRawResponsePayload(task.rawResponsePayload)
-  return rawResponsePayload === task.rawResponsePayload ? task : { ...task, rawResponsePayload }
+  const migratedTask = migrateLegacyGrokTask(task, useStore.getState().settings)
+  const rawResponsePayload = getPersistableRawResponsePayload(migratedTask.rawResponsePayload)
+  return rawResponsePayload === migratedTask.rawResponsePayload ? migratedTask : { ...migratedTask, rawResponsePayload }
 }
 
 function putTask(task: TaskRecord): Promise<IDBValidKey> {
@@ -1178,9 +1181,11 @@ function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number, profile?
   openAIWatchdogTimers.set(taskId, timer)
 }
 
+/** 判断多图是否拆为独立请求，避免对 Grok 批次误用单请求超时策略。 */
 function usesConcurrentImageRequests(settings: AppSettings, profile: ApiProfile, params: TaskParams, hasInputImages: boolean) {
   const n = params.n > 0 ? params.n : 1
   if (n <= 1) return false
+  if (profile.provider === 'grok') return true
   if (profile.provider === 'openai') {
     if (profile.apiMode === 'responses') return true
     return profile.apiMode === 'images' && (profile.codexCli || profile.streamImages)
@@ -1560,7 +1565,7 @@ export async function initStore() {
     useStore.getState().setDefaultFavoriteCollectionId(normalizedFavorites.defaultFavoriteCollectionId)
   }
   await Promise.all(tasks
-    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload)
+    .filter((task, index) => normalizedFavorites.changed || interruptedTaskIds.has(task.id) || task.rawResponsePayload !== markedTasks[index]?.rawResponsePayload || task.apiProvider !== markedTasks[index]?.apiProvider)
     .map((task) => putTask(task)))
   useStore.getState().setTasks(tasks)
   showSupportPromptForExistingLocalData(tasks)
@@ -1701,7 +1706,7 @@ export async function initStore() {
   }
 }
 
-/** 提交新任务 */
+/** 校验图片能力后提交新任务；不支持的 Grok 草稿在任何持久化及批量占位之前拒绝。 */
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, reusedTaskApiModel, showToast, setConfirmDialog } =
     useStore.getState()
@@ -1735,6 +1740,12 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   if (validateApiProfile(activeProfile)) {
     showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
     useStore.getState().setShowSettings(true)
+    return
+  }
+
+  const grokInputError = getGrokImageInputError(activeProfile, inputImages.length, Boolean(maskDraft))
+  if (grokInputError) {
+    showToast(grokInputError, 'error')
     return
   }
 
@@ -2456,6 +2467,7 @@ async function continueRecoveredAgentRound(taskId: string) {
   }
 }
 
+/** 提交 Agent 消息；先验证混合模式图片配置，失败时保留草稿且不创建会话或写入图片。 */
 export async function submitAgentMessage() {
   const state = useStore.getState()
   const { settings, prompt, inputImages, maskDraft, params, showToast } = state
@@ -2474,6 +2486,11 @@ export async function submitAgentMessage() {
 
   const activeProfile = getAgentTextApiProfile(normalizedSettings)!
   const imageProfile = getAgentImageApiProfile(normalizedSettings)!
+  const grokInputError = getGrokImageInputError(imageProfile, inputImages.length, Boolean(maskDraft))
+  if (grokInputError) {
+    showToast(grokInputError, 'error')
+    return
+  }
 
   const trimmedPrompt = prompt.trim()
   if (!trimmedPrompt) {
@@ -3682,6 +3699,7 @@ async function executeAgentRound(
   }
 }
 
+/** 执行画廊任务；执行标识失效后忽略结果，并阻止分批生成提交后续请求。 */
 async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -3744,6 +3762,7 @@ async function executeTask(taskId: string) {
       inputImageDataUrls: inputDataUrls,
       maskDataUrl,
       skipCodexCliSizePrompt: task.sourceMode === 'agent',
+      isCancelled: () => taskExecutions.get(taskId) !== execution,
       onFalRequestEnqueued: (request) => {
         if (taskExecutions.get(taskId) !== execution) return
         falRequestInfo = request
@@ -4005,12 +4024,17 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 按重试方式新建任务或覆盖原任务；Agent 对话中的任务始终新建 */
+/** 按重试方式创建或覆盖任务；先校验当前供应商能力，拒绝不支持的历史遮罩或参考图。 */
 export async function retryTask(task: TaskRecord) {
   const { settings, tasks } = useStore.getState()
   const source = tasks.find((item) => item.id === task.id)
   if (!source || source.status === 'running' || source.falRecoverable || source.customRecoverable) return
   const activeProfile = getActiveApiProfile(settings)
+  const grokInputError = getGrokImageInputError(activeProfile, source.inputImageIds.length, Boolean(source.maskImageId))
+  if (grokInputError) {
+    useStore.getState().showToast(grokInputError, 'error')
+    return
+  }
   const normalizedParams = normalizeParamsForSettings(source.params, settings, { hasInputImages: source.inputImageIds.length > 0 })
   const shouldUseTransparentOutput = (normalizedParams.output_format === 'png' || normalizedParams.output_format === 'webp') && normalizedParams.transparent_output
   const taskParams = shouldUseTransparentOutput
@@ -4651,7 +4675,7 @@ export async function restoreExplicitPresetConfig(ids: { providerIds: string[], 
   return true
 }
 
-/** 导入 ZIP 数据 */
+/** 导入 ZIP 的配置、任务和图片；迁移旧 Grok 任务引用，并沿用现有解析取消及持久化流程。 */
 export async function importData(input: File | File[], options: ImportOptions = { importConfig: true, importTasks: true }): Promise<boolean> {
   // 只允许在解析备份阶段取消；开始写入后取消会留下半份数据
   const signal = startDataProgress('import', true)
@@ -4689,7 +4713,10 @@ export async function importData(input: File | File[], options: ImportOptions = 
 
     const settingsManifests = selected.filter((part) => part.manifest.settings)
     if (options.importConfig && !options.importTasks && !settingsManifests.length) throw new Error('这份备份里没有配置。')
-    const importedTasks = selected.flatMap((part) => part.manifest.tasks ?? [])
+    const importedTasks = selected.flatMap((part) => {
+      const settings = part.manifest.settings ? normalizeSettings(part.manifest.settings) : useStore.getState().settings
+      return (part.manifest.tasks ?? []).map((task) => migrateLegacyGrokTask(task, settings))
+    })
     const importedAgentConversations = selected.flatMap((part) => part.manifest.agentConversations ?? [])
     const hasTaskData = selected.some((part) => part.manifest.tasks != null || part.manifest.imageFiles != null)
 

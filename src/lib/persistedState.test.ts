@@ -58,6 +58,18 @@ function fallback() {
 }
 
 describe('persisted state codec', () => {
+  it('restores Grok geometry without losing legacy GPT parameters', () => {
+    const restored = normalizePersistedState({ params: { ...DEFAULT_PARAMS, resolution: '2k', aspect_ratio: '9:16' } }, fallback(), 1)!.state.params
+    expect(restored).toMatchObject({ ...DEFAULT_PARAMS, resolution: '2k', aspect_ratio: '9:16' })
+    expect(normalizePersistedState({ params: DEFAULT_PARAMS }, fallback(), 1)!.state.params).toEqual(DEFAULT_PARAMS)
+  })
+
+  it('discards invalid external Grok geometry', () => {
+    const restored = normalizePersistedState({ params: { ...DEFAULT_PARAMS, resolution: '4k', aspect_ratio: 'invalid' } }, fallback(), 1)!.state.params
+    expect(restored).not.toHaveProperty('resolution')
+    expect(restored).not.toHaveProperty('aspect_ratio')
+  })
+
   it.each([undefined, 'custom-image-model', '', '   '])('restores profile and legacy top-level tool model %s without autofilling', (imageGenerationModel) => {
     const profile = { apiMode: 'responses', model: 'legacy-text-model', ...(imageGenerationModel === undefined ? {} : { imageGenerationModel }) }
     for (const settings of [profile, { profiles: [profile] }]) {

@@ -1,0 +1,34 @@
+{
+  "profiles": [
+    {
+      "id": "default-openai",
+      "name": "GPT 图片",
+      "provider": "openai",
+      "baseUrl": "https://api.example.com/v1",
+      "model": "gpt-image-2",
+      "apiMode": "images",
+      "isDefault": true
+    },
+    {
+      "id": "grok-images",
+      "name": "Grok 图片",
+      "provider": "grok",
+      "baseUrl": "https://api.example.com/v1",
+      "model": "grok-imagine-image, grok-imagine-image-2.0, grok-imagine-image-quality",
+      "apiMode": "images"
+    },
+    {
+      "id": "agent-text",
+      "name": "Agent 文本",
+      "provider": "openai",
+      "baseUrl": "https://api.example.com/v1",
+      "model": "your-text-model",
+      "apiMode": "responses"
+    }
+  ],
+  "agent": {
+    "apiConfigMode": "hybrid",
+    "textProfileId": "agent-text",
+    "imageProfileId": "grok-images"
+  }
+}

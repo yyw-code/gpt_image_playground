@@ -15,7 +15,7 @@ export const ZIP_DOWNLOAD_ROUTE_VALUES = [
 ] as const
 export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
 export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection', 'favorite-collection-selection']
-export type BuiltInApiProvider = 'openai' | 'sb2api-async' | 'fal'
+export type BuiltInApiProvider = 'openai' | 'sb2api-async' | 'fal' | 'grok'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
 export const DEFAULT_STREAM_PARTIAL_IMAGES = 1
@@ -63,6 +63,8 @@ export interface CustomProviderPollMapping {
 
 export interface CustomProviderDefinition {
   id: string
+  /** 旧同名自定义 Grok 的迁移标记，用于同步历史任务引用。 */
+  legacyProviderId?: 'grok'
   name: string
   template?: CustomProviderTemplate
   submit: CustomProviderSubmitMapping
@@ -194,6 +196,10 @@ export interface AppSettings {
 // ===== 任务参数 =====
 
 export interface TaskParams {
+  /** Grok 原生分辨率；旧记录缺省时由请求配置补默认值。 */
+  resolution?: '1k' | '2k'
+  /** Grok 原生宽高比，与 GPT 的像素尺寸分别保存。 */
+  aspect_ratio?: string
   size: string
   quality: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   output_format: 'png' | 'jpeg' | 'webp'

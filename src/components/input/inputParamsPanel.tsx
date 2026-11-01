@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiProfile, AppSettings, BatchProgress, BatchPromptMode, TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
+import { GROK_IMAGE_ASPECT_RATIOS } from '../../lib/grokImage'
 import { isTauri } from '../../lib/platform'
 import { dismissAllTooltips } from '../../lib/tooltipDismiss'
 import Select from '../Select'
@@ -93,6 +94,7 @@ interface HintTooltipState {
   startTouch: () => void
 }
 
+/** 根据图片供应商展示可用参数，Grok 只显示原生分辨率、比例及数量。 */
 export default function InputParamsPanel({
   params,
   setParams,
@@ -194,8 +196,9 @@ export default function InputParamsPanel({
   onBatchChange: (patch: BatchSettingsPatch) => void
   onStopBatch: () => void
 }) {
+  const isGrok = activeProfile.provider === 'grok'
   // 折叠时也展示弹层内每一项的当前值，不支持的参数不显示
-  const moreSummary = [
+  const moreSummary = isGrok ? '接口原始格式' : [
     params.output_format.toUpperCase(),
     showTransparentOutputControl
       ? `透明 ${transparentOutputEnabled}`
@@ -221,55 +224,76 @@ export default function InputParamsPanel({
           className={CHIP_CLASS}
         />
       </div>
-      <div
-        className="relative max-sm:flex-auto sm:shrink-0"
-        onMouseEnter={sizeHint.show}
-        onMouseLeave={sizeHint.hide}
-        onTouchStart={sizeHint.startTouch}
-        onTouchEnd={sizeHint.clearTimer}
-        onTouchCancel={sizeHint.hide}
-        onClick={sizeHint.show}
-      >
-        <button
-          type="button"
-          onClick={() => { dismissAllTooltips(); onOpenSizePicker() }}
-          className={`flex w-full items-center ${CHIP_CLASS}`}
-        >
-          {prefix('尺寸')}
-          <span className="font-mono">{displaySize}</span>
-        </button>
-        <ButtonTooltip
-          visible={(isFalTextToImage || activeProfile.codexCli) && sizeHint.visible}
-          text={isFalTextToImage
-            ? <>fal.ai 的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>
-            : 'Codex CLI 不支持尺寸参数，此处设置仅基于提示词工程'}
-        />
-      </div>
-      <div
-        className="relative max-sm:flex-auto sm:shrink-0"
-        onMouseEnter={qualityHint.show}
-        onMouseLeave={qualityHint.hide}
-        onTouchStart={qualityHint.startTouch}
-        onTouchEnd={qualityHint.clearTimer}
-        onTouchCancel={qualityHint.hide}
-        onClick={qualityHint.show}
-      >
-        <Select
-          value={activeProfile.codexCli ? 'auto' : isFalProvider && params.quality === 'auto' ? 'high' : params.quality}
-          onChange={(val) => {
-            if (!activeProfile.codexCli) setParams({ quality: val as TaskParams['quality'] })
-          }}
-          options={qualityOptions}
-          disabled={activeProfile.codexCli}
-          prefix={prefix('质量')}
-          menuClassName="min-w-max"
-          className={activeProfile.codexCli ? CHIP_DISABLED_CLASS : CHIP_CLASS}
-        />
-        <ButtonTooltip
-          visible={(activeProfile.codexCli || isFalProvider) && qualityHint.visible}
-          text={isFalProvider ? <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : 'Codex CLI 不支持质量参数'}
-        />
-      </div>
+      {isGrok ? (
+        <>
+          <Select
+            value={params.resolution ?? '1k'}
+            onChange={(value) => setParams({ resolution: value as TaskParams['resolution'] })}
+            options={[{ label: '1K', value: '1k' }, { label: '2K', value: '2k' }]}
+            prefix={prefix('分辨率')}
+            className={CHIP_CLASS}
+          />
+          <Select
+            value={params.aspect_ratio ?? '1:1'}
+            onChange={(value) => setParams({ aspect_ratio: String(value) })}
+            options={GROK_IMAGE_ASPECT_RATIOS.map((value) => ({ label: value, value }))}
+            prefix={prefix('比例')}
+            className={CHIP_CLASS}
+          />
+        </>
+      ) : (
+        <>
+          <div
+            className="relative max-sm:flex-auto sm:shrink-0"
+            onMouseEnter={sizeHint.show}
+            onMouseLeave={sizeHint.hide}
+            onTouchStart={sizeHint.startTouch}
+            onTouchEnd={sizeHint.clearTimer}
+            onTouchCancel={sizeHint.hide}
+            onClick={sizeHint.show}
+          >
+            <button
+              type="button"
+              onClick={() => { dismissAllTooltips(); onOpenSizePicker() }}
+              className={`flex w-full items-center ${CHIP_CLASS}`}
+            >
+              {prefix('尺寸')}
+              <span className="font-mono">{displaySize}</span>
+            </button>
+            <ButtonTooltip
+              visible={(isFalTextToImage || activeProfile.codexCli) && sizeHint.visible}
+              text={isFalTextToImage
+                ? <>fal.ai 的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>
+                : 'Codex CLI 不支持尺寸参数，此处设置仅基于提示词工程'}
+            />
+          </div>
+          <div
+            className="relative max-sm:flex-auto sm:shrink-0"
+            onMouseEnter={qualityHint.show}
+            onMouseLeave={qualityHint.hide}
+            onTouchStart={qualityHint.startTouch}
+            onTouchEnd={qualityHint.clearTimer}
+            onTouchCancel={qualityHint.hide}
+            onClick={qualityHint.show}
+          >
+            <Select
+              value={activeProfile.codexCli ? 'auto' : isFalProvider && params.quality === 'auto' ? 'high' : params.quality}
+              onChange={(val) => {
+                if (!activeProfile.codexCli) setParams({ quality: val as TaskParams['quality'] })
+              }}
+              options={qualityOptions}
+              disabled={activeProfile.codexCli}
+              prefix={prefix('质量')}
+              menuClassName="min-w-max"
+              className={activeProfile.codexCli ? CHIP_DISABLED_CLASS : CHIP_CLASS}
+            />
+            <ButtonTooltip
+              visible={(activeProfile.codexCli || isFalProvider) && qualityHint.visible}
+              text={isFalProvider ? <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : 'Codex CLI 不支持质量参数'}
+            />
+          </div>
+        </>
+      )}
       <label
         className={`relative flex items-center max-sm:flex-auto sm:shrink-0 ${agentAutoImageCount ? CHIP_DISABLED_CLASS : `${CHIP_CLASS} cursor-text`}`}
         onMouseEnter={() => { showAgentNHint(); streamConcurrentHint.show() }}
@@ -313,6 +337,10 @@ export default function InputParamsPanel({
         <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text="数量大于 1 时会将多图生成拆分为并发单图" />
       </label>
       <ParamPopoverChip label="更多" summary={moreSummary} className="sm:min-w-[5rem]">
+        {isGrok ? (
+          <p className="text-gray-500">图片使用接口原始格式，最多 3 张参考图；暂不支持遮罩与背景处理。</p>
+        ) : (
+          <>
             <div className={ROW_CLASS}>
               <span className={ROW_LABEL_CLASS}>格式</span>
               <div className="w-28">
@@ -430,6 +458,8 @@ export default function InputParamsPanel({
                 text="fal.ai 不支持审核参数"
               />
             </div>
+          </>
+        )}
       </ParamPopoverChip>
       {showBatch && (
         <ParamPopoverChip label="批量" summary={batchSummary} active={batchEnabled || Boolean(batchProgress)} className="sm:shrink-0">
