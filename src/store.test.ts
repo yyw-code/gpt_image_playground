@@ -5892,6 +5892,71 @@ describe('client connection errors', () => {
 })
 
 
+describe('site backup profile collisions', () => {
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_SITE_MODE', 'true')
+    await clearTasks()
+    await clearAgentConversations()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it.each(['single', 'multipart', 'multiple'])('导入 %s 备份时重映射冲突配置的任务引用，保留已有配置和任务', async (mode) => {
+    const profiles = await import('./lib/apiProfiles')
+    const policy = await import('./lib/presetConfig')
+    const store = await import('./store')
+    const local = profiles.createDefaultOpenAIProfile({ id: 'shared', baseUrl: 'https://site.example/v1', apiKey: 'local-test-key' })
+    const grok = { ...local, provider: 'grok', model: 'grok-imagine-image', apiKey: 'backup-test-key' }
+    const localTask = task({ id: 'local-task', apiProfileId: local.id, apiProvider: local.provider })
+    const backupTask = task({ id: 'backup-task', apiProfileId: grok.id, apiProvider: grok.provider, apiModel: grok.model })
+    policy.setPresetConfig({ customProviders: [], profiles: [local] })
+    store.useStore.setState({ settings: profiles.normalizeSettings({ profiles: [local], activeProfileId: local.id }), tasks: [localTask], agentConversations: [], showToast: vi.fn() })
+    await putDbTask(localTask)
+    const settings = profiles.normalizeSettings({ profiles: [grok], activeProfileId: grok.id })
+    const first = { version: 3 as const, exportedAt: new Date(0).toISOString(), settings, tasks: [backupTask] }
+    const secondTask = { ...backupTask, id: 'backup-task-2' }
+    const secondProfile = { ...grok, baseUrl: 'https://other.example/v1', apiKey: 'second-backup-test-key' }
+    const files = mode === 'single' ? [importFile(first)] : mode === 'multipart'
+      ? [importFile({ ...first, backupPart: { id: 'backup', index: 1, total: 2 } }), importFile({ version: 3, exportedAt: first.exportedAt, backupPart: { id: 'backup', index: 2, total: 2 }, tasks: [secondTask] })].reverse()
+      : [importFile(first), importFile({ ...first, settings: profiles.normalizeSettings({ profiles: [secondProfile] }), tasks: [secondTask] })]
+
+    expect(await store.importData(files, { importConfig: true, importTasks: true })).toBe(true)
+    const state = store.useStore.getState()
+    const restoredProfile = state.settings.profiles.find((profile) => profile.apiKey === grok.apiKey)!
+    expect(restoredProfile.id).not.toBe(local.id)
+    expect(state.settings.profiles.find((profile) => profile.id === local.id)).toMatchObject(local)
+    expect(state.tasks.find((item) => item.id === localTask.id)?.apiProfileId).toBe(local.id)
+    const restoredTask = state.tasks.find((item) => item.id === backupTask.id)!
+    expect(restoredTask.apiProfileId).toBe(restoredProfile.id)
+    expect(store.getTaskApiProfile(state.settings, restoredTask)).toMatchObject({ provider: 'grok', apiKey: grok.apiKey })
+    expect((await getAllTasks()).find((item) => item.id === backupTask.id)?.apiProfileId).toBe(restoredProfile.id)
+    if (mode !== 'single') {
+      const secondId = mode === 'multipart' ? restoredProfile.id : state.settings.profiles.find((profile) => profile.apiKey === secondProfile.apiKey)!.id
+      expect(state.tasks.find((item) => item.id === secondTask.id)?.apiProfileId).toBe(secondId)
+      expect((await getAllTasks()).find((item) => item.id === secondTask.id)?.apiProfileId).toBe(secondId)
+      if (mode === 'multiple') expect(secondId).not.toBe(restoredProfile.id)
+    }
+  })
+
+  it('仅导入任务时不合并配置或改写其配置 ID', async () => {
+    const profiles = await import('./lib/apiProfiles')
+    const policy = await import('./lib/presetConfig')
+    const store = await import('./store')
+    const local = profiles.createDefaultOpenAIProfile({ id: 'shared', baseUrl: 'https://site.example/v1', apiKey: 'local-test-key' })
+    policy.setPresetConfig({ customProviders: [], profiles: [local] })
+    store.useStore.setState({ settings: profiles.normalizeSettings({ profiles: [local] }), tasks: [], agentConversations: [], showToast: vi.fn() })
+    const importedTask = task({ apiProfileId: local.id, apiProvider: 'grok' })
+    const settings = profiles.normalizeSettings({ profiles: [{ ...local, provider: 'grok', apiKey: 'backup-test-key' }] })
+    expect(await store.importData(importFile({ version: 3, exportedAt: new Date(0).toISOString(), settings, tasks: [importedTask] }), { importConfig: false, importTasks: true })).toBe(true)
+    expect(store.useStore.getState().settings.profiles).toEqual([local])
+    expect((await getAllTasks())[0].apiProfileId).toBe(local.id)
+  })
+})
+
 describe('Grok task lifecycle', () => {
   const grokProfile = { id: 'grok-profile', name: 'Grok', provider: 'grok', baseUrl: 'https://relay.example/v1', apiKey: 'grok-test-key', model: 'grok-imagine-image' }
   const textProfile = createDefaultOpenAIProfile({ id: 'grok-text-profile', baseUrl: 'https://relay.example/v1', apiKey: 'text-test-key', apiMode: 'responses', model: DEFAULT_RESPONSES_MODEL })

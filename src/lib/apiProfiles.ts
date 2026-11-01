@@ -1155,11 +1155,11 @@ export function findEquivalentApiProfile(
   return normalized.profiles.find((item) => getApiProfileConnectionKey(item) === connectionKey) ?? null
 }
 
-/** 合并备份或链接配置；本站遇到同 ID 的不同连接时另存，保留原地址和原密钥。 */
+/** 合并备份或链接配置；本站冲突连接另存，并通过 profileIdMap 返回改名映射，供导入方同步任务引用。 */
 export function mergeImportedSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
-  options: { preserveInternalIds?: boolean } = {},
+  options: { preserveInternalIds?: boolean; profileIdMap?: Map<string, string> } = {},
 ): AppSettings {
   const current = normalizeSettings(currentSettings)
   const normalizedImported = normalizeSettings(importedSettings)
@@ -1178,7 +1178,9 @@ export function mergeImportedSettings(
       const idx = profiles.findIndex((item) => item.id === profile.id)
       const existing = profiles[idx]
       if (existing && (existing.provider !== profile.provider || existing.baseUrl !== profile.baseUrl || existing.apiProxy !== profile.apiProxy)) {
-        profiles.push({ ...profile, id: createImportedProfileId(profile.provider, new Set(profiles.map((item) => item.id))) })
+        const id = createImportedProfileId(profile.provider, new Set(profiles.map((item) => item.id)))
+        profiles.push({ ...profile, id })
+        options.profileIdMap?.set(profile.id, id)
       } else if (existing) profiles[idx] = profile
       else profiles.push(profile)
     }
@@ -1273,7 +1275,7 @@ function mergePresetProfileSnapshot(previous: ApiProfile, imported: ApiProfile, 
   return { ...previous, ...patch, id: imported.id, isDefault: imported.isDefault }
 }
 
-/** 合并部署预置并迁移旧 Grok；保留用户编辑，本站连接变化时另建空密钥配置。 */
+/** 合并部署预置并迁移旧 Grok；按本站实际别名应用更新，连接变化时另建空密钥配置。 */
 export function mergePresetImportedSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
@@ -1334,16 +1336,25 @@ export function mergePresetImportedSettings(
 
   const currentProfilesById = new Map(current.profiles.map((profile) => [profile.id, profile]))
   const nextProfiles = sourceProfileEntries.map((entry) => {
-    const matched = replacingPristineDefault ? undefined : currentProfilesById.get(entry.profile.id)
     const normalizedProfile = {
       ...entry.profile,
       isDefault: entry.profile.id === sourceDefaultProfileId ? true : undefined,
     }
     const previous = previousProfilesById.get(entry.profile.id)
     const fields = getPresetDeploymentFields(importedRecord.presetProfileFields, entry.profile.id, entry.source)
-    const importedProfile = previous
+    const snapshot = previous
       ? mergePresetProfileSnapshot(previous, normalizedProfile, fields)
       : normalizedProfile
+    // 与站点策略使用同样的后缀规则，更新实际预置而不是同 ID 保留的旧连接。
+    let id = entry.profile.id
+    let matched = replacingPristineDefault ? undefined : currentProfilesById.get(id)
+    if (IS_SITE_MODE && isSiteApiProfile(snapshot) && !replacingPristineDefault) {
+      while (matched && (!isSiteApiProfile(matched) || matched.provider !== snapshot.provider)) {
+        id = `${id}-site`
+        matched = currentProfilesById.get(id)
+      }
+    }
+    const importedProfile = { ...snapshot, id }
     if (!matched) return IS_SITE_MODE ? { ...importedProfile, apiKey: '' } : importedProfile
     // 同 ID 的旧地址、旧供应商或代理设置不再属于本次部署，不迁移其密钥。
     if (IS_SITE_MODE && (!isSiteApiProfile(matched) || matched.provider !== importedProfile.provider)) return matched

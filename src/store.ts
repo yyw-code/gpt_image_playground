@@ -4679,7 +4679,7 @@ export async function restoreExplicitPresetConfig(ids: { providerIds: string[], 
   return true
 }
 
-/** 导入 ZIP 的配置、任务和图片；迁移旧 Grok 任务引用，并沿用现有解析取消及持久化流程。 */
+/** 导入 ZIP 的配置、任务和图片；同步冲突配置及旧 Grok 的任务引用，沿用现有取消及持久化流程。 */
 export async function importData(input: File | File[], options: ImportOptions = { importConfig: true, importTasks: true }): Promise<boolean> {
   // 只允许在解析备份阶段取消；开始写入后取消会留下半份数据
   const signal = startDataProgress('import', true)
@@ -4717,9 +4717,22 @@ export async function importData(input: File | File[], options: ImportOptions = 
 
     const settingsManifests = selected.filter((part) => part.manifest.settings)
     if (options.importConfig && !options.importTasks && !settingsManifests.length) throw new Error('这份备份里没有配置。')
+    // 在写入任务前确定配置 ID；普通备份各自映射，分卷共享配置所在卷的映射。
+    const profileIdMaps = new Map<typeof selected[number], Map<string, string>>()
+    const importedSettings = options.importConfig ? settingsManifests.reduce((current, part) => {
+      const profileIdMap = new Map<string, string>()
+      profileIdMaps.set(part, profileIdMap)
+      return mergeImportedSettings(current, part.manifest.settings, { preserveInternalIds: true, profileIdMap })
+    }, useStore.getState().settings) : null
     const importedTasks = selected.flatMap((part) => {
-      const settings = part.manifest.settings ? normalizeSettings(part.manifest.settings) : useStore.getState().settings
-      return (part.manifest.tasks ?? []).map((task) => migrateLegacyGrokTask(task, settings))
+      const source = part.manifest.settings ? part : multipart ? settingsManifests[0] : undefined
+      const settings = source ? normalizeSettings(source.manifest.settings) : useStore.getState().settings
+      const profileIdMap = source ? profileIdMaps.get(source) : undefined
+      return (part.manifest.tasks ?? []).map((task) => {
+        const migrated = migrateLegacyGrokTask(task, settings)
+        const id = migrated.apiProfileId ? profileIdMap?.get(migrated.apiProfileId) : undefined
+        return id ? { ...migrated, apiProfileId: id } : migrated
+      })
     })
     const importedAgentConversations = selected.flatMap((part) => part.manifest.agentConversations ?? [])
     const hasTaskData = selected.some((part) => part.manifest.tasks != null || part.manifest.imageFiles != null)
@@ -4814,7 +4827,7 @@ export async function importData(input: File | File[], options: ImportOptions = 
       void scheduleMissingThumbnailBackfill(importedImageIds)
     }
 
-    if (options.importConfig && settingsManifests.length) {
+    if (importedSettings && settingsManifests.length) {
       const state = useStore.getState()
       const providerIds = new Set(settingsManifests.flatMap((part) =>
         part.manifest.settings?.customProviders?.map((provider) => provider.id) ?? [],
@@ -4831,11 +4844,7 @@ export async function importData(input: File | File[], options: ImportOptions = 
         if (presetProfileIds.has(id)) state.restorePresetProfile(id)
       }
       const current = useStore.getState()
-      const settings = settingsManifests.reduce(
-        (current, part) => mergeImportedSettings(current, part.manifest.settings, { preserveInternalIds: true }),
-        current.settings,
-      )
-      current.setSettings(settings)
+      current.setSettings(importedSettings)
     }
 
     let msg = '导入完成'

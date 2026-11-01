@@ -6,6 +6,66 @@ afterEach(() => {
 })
 
 describe('preset config policy', () => {
+  it.each(['provider', 'baseUrl', 'apiProxy'])('本站 %s 冲突生成的预置别名继续接收部署更新并保留密钥和未变字段', async (field) => {
+    vi.stubEnv('VITE_SITE_MODE', 'true')
+    vi.stubEnv('VITE_SHOW_PRESET_CONFIG_ONLY', 'true')
+    vi.stubEnv('VITE_LOCK_PRESET_CONFIG_PARAMS', 'false')
+    const { createDefaultOpenAIProfile, mergePresetImportedSettings, normalizeSettings } = await import('./apiProfiles')
+    const policy = await import('./presetConfig')
+    const source = createDefaultOpenAIProfile({ id: 'site', provider: 'grok', baseUrl: 'https://site.example/v1', model: 'grok-imagine-image' })
+    const old = normalizeSettings({ profiles: [{
+      ...source,
+      apiKey: 'old-test-key',
+      ...(field === 'provider' ? { provider: 'openai', model: 'gpt-image-2' } : {}),
+      ...(field === 'baseUrl' ? { baseUrl: 'https://old.example/v1' } : {}),
+      ...(field === 'apiProxy' ? { apiProxy: !source.apiProxy } : {}),
+    }] }).profiles[0]
+    const previous = { customProviders: [], profiles: [old] }
+    const initial = { customProviders: [], profiles: [source] }
+    policy.setPresetConfig(initial)
+    const merged = mergePresetImportedSettings(normalizeSettings({ profiles: [old] }), initial, { previousPresetConfig: previous })
+    const settings = policy.enforcePresetConfigPolicy(merged.settings, { restoreSitePresets: true })
+    const alias = settings.profiles.find((profile) => profile.id === settings.activeProfileId)!
+    expect(alias.id).not.toBe(old.id)
+    expect(alias.apiKey).toBe('')
+    const edited = { ...settings, profiles: settings.profiles.map((profile) => profile.id === alias.id ? { ...profile, apiKey: 'new-test-key', timeout: 789 } : profile) }
+    const next = { customProviders: [], profiles: [{ ...source, model: 'grok-imagine-image-quality' }] }
+    policy.setPresetConfig(next)
+    const updated = mergePresetImportedSettings(edited, next, { previousPresetConfig: merged.presetConfig })
+    const enforced = policy.enforcePresetConfigPolicy(updated.settings, { restoreSitePresets: true })
+    expect(enforced.profiles.find((profile) => profile.id === alias.id)).toMatchObject({ model: 'grok-imagine-image-quality', apiKey: 'new-test-key', timeout: 789 })
+    expect(enforced.profiles.find((profile) => profile.id === old.id)).toMatchObject(old)
+    expect(enforced.profiles).toHaveLength(2)
+
+    const local = { ...enforced, profiles: enforced.profiles.map((profile) => profile.id === alias.id ? { ...profile, model: 'local-model' } : profile) }
+    const repeated = mergePresetImportedSettings(local, next, { previousPresetConfig: updated.presetConfig })
+    expect(repeated.settings.profiles.find((profile) => profile.id === alias.id)?.model).toBe('local-model')
+  })
+
+  it.each([false, true])('本站多重后缀别名遵循参数锁定 %s 并保持其他预置独立', async (locked) => {
+    vi.stubEnv('VITE_SITE_MODE', 'true')
+    vi.stubEnv('VITE_LOCK_PRESET_CONFIG_PARAMS', String(locked))
+    const { createDefaultOpenAIProfile, mergePresetImportedSettings, normalizeSettings } = await import('./apiProfiles')
+    const policy = await import('./presetConfig')
+    const source = createDefaultOpenAIProfile({ id: 'site', provider: 'grok', baseUrl: 'https://site.example/v1', model: 'grok-imagine-image', isDefault: true })
+    const other = createDefaultOpenAIProfile({ id: 'text', baseUrl: source.baseUrl, apiMode: 'responses' })
+    const old = { ...source, provider: 'openai', apiKey: 'old-test-key' }
+    const foreign = { ...source, id: 'site-site', baseUrl: 'https://old.example/v1', apiKey: 'foreign-test-key' }
+    const alias = { ...source, id: 'site-site-site', apiKey: 'alias-test-key', timeout: 789 }
+    const next = { customProviders: [], profiles: [{ ...source, model: 'grok-imagine-image-quality' }, other] }
+    policy.setPresetConfig(next)
+    const merged = mergePresetImportedSettings(normalizeSettings({ profiles: [old, foreign, alias, other], activeProfileId: alias.id }), next, {
+      previousPresetConfig: { customProviders: [], profiles: [source, other] }, lockPresetParams: locked,
+    })
+    const result = policy.enforcePresetConfigPolicy(merged.settings)
+    expect(result.activeProfileId).toBe(alias.id)
+    expect(result.profiles.find((profile) => profile.id === alias.id)).toMatchObject({ model: 'grok-imagine-image-quality', apiKey: alias.apiKey, timeout: locked ? source.timeout : alias.timeout })
+    expect(result.profiles.find((profile) => profile.id === old.id)).toMatchObject({ apiKey: old.apiKey, model: old.model })
+    expect(result.profiles.find((profile) => profile.id === foreign.id)).toMatchObject({ apiKey: foreign.apiKey, baseUrl: foreign.baseUrl })
+    expect(result.profiles.find((profile) => profile.id === other.id)).toMatchObject({ model: other.model, provider: other.provider })
+    expect(result.profiles).toHaveLength(4)
+  })
+
   it('本站允许多套配置和独立 Agent，保留外站原地址及密钥但不启用', async () => {
     vi.stubEnv('VITE_SITE_MODE', 'true')
     const { createDefaultOpenAIProfile, normalizeSettings } = await import('./apiProfiles')
