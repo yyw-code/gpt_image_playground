@@ -545,6 +545,63 @@ describe('task retry', () => {
   })
 })
 
+describe('aspect ratio revised prompt handling', () => {
+  const profile = createDefaultOpenAIProfile({ id: 'site-ratio', baseUrl: 'https://site.example/v1', apiKey: 'test-key', apiMode: 'responses' })
+  let store: typeof import('./store')
+
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_SITE_MODE', 'true')
+    store = await import('./store')
+    const site = await import('./lib/siteProfiles')
+    site.setSiteConnection(profile)
+    await clearTasks()
+    await clearImages()
+    vi.mocked(callImageApi).mockReset()
+    store.useStore.setState({
+      settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id, allowPromptRewrite: false }),
+      appMode: 'gallery', prompt: 'Draw a cat.', inputImages: [], tasks: [],
+      params: { ...DEFAULT_PARAMS, size: '2016x864' }, maskDraft: null,
+      dismissedCodexCliPrompts: [], showToast: vi.fn(), setConfirmDialog: vi.fn(),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it.each([false, true])('keeps genuine rewrites=%s while ignoring only the injected composition', async (rewritten) => {
+    const revised = rewritten ? 'Draw a dog.' : 'Draw a cat.'
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,1915x821'], actualParams: { quality: 'medium' }, actualParamsList: [{}],
+      revisedPrompts: [`${revised}\n\nComposition: 21:9 aspect ratio, landscape canvas.`],
+    })
+    await store.submitTask()
+    await vi.waitFor(() => expect(store.useStore.getState().tasks[0]?.status).toBe('done'))
+    const state = store.useStore.getState()
+    const saved = state.tasks[0]
+    expect(saved.revisedPromptByImage?.[saved.outputImages[0]]).toBe(revised)
+    if (rewritten) expect(state.setConfirmDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '检测到 Codex CLI API' }))
+    else expect(state.setConfirmDialog).not.toHaveBeenCalled()
+    expect(saved.actualParams?.quality).toBe('medium')
+  })
+
+  it('removes the old Codex size prefix together with the new composition suffix', async () => {
+    const codexProfile = { ...profile, codexCli: true }
+    store.useStore.setState({ settings: normalizeSettings({ profiles: [codexProfile], activeProfileId: profile.id }) })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => ({
+      images: ['data:image/png;base64,1915x821'], actualParams: {}, actualParamsList: [{}],
+      revisedPrompts: [`Generate at ${opts.params.size} resolution. Draw a cat.\n\nComposition: 21:9 aspect ratio, landscape canvas.`],
+    }))
+    await store.submitTask()
+    await vi.waitFor(() => expect(store.useStore.getState().tasks[0]?.status).toBe('done'))
+    const saved = store.useStore.getState().tasks[0]
+    expect(saved.revisedPromptByImage?.[saved.outputImages[0]]).toBe('Draw a cat.')
+    expect(store.useStore.getState().setConfirmDialog).not.toHaveBeenCalled()
+  })
+})
+
 describe('mask draft lifecycle in store actions', () => {
   beforeEach(() => {
     vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })

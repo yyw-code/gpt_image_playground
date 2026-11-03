@@ -6,6 +6,8 @@ import { apiFetch } from './platform'
 import { getSiteProfileError } from './siteProfiles'
 import { normalizeResponsesOutputItems } from './responsesOutputState'
 import { isEventStreamResponse, readJsonServerSentEvents, throwIfAborted } from './serverSentEvents'
+import { appendImageAspectRatioPrompt, getImageAspectRatioInstruction } from './size'
+import { IS_SITE_MODE } from './siteMode'
 
 export interface AgentApiResultImage {
   toolCallId?: string
@@ -62,7 +64,8 @@ const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '- Do not use LaTeX delimiters like `\\(...\\)` or `\\[...\\]` in visible assistant text.',
 ].join('\n')
 
-function createAgentInstructions(settings: AppSettings, codexCliSize?: string) {
+/** 生成 Agent 工具策略，要求本站及 Codex 的每张图片提示词携带当前选择的画幅比例。 */
+function createAgentInstructions(settings: AppSettings, params: TaskParams, imageProfile: ApiProfile) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
     : DEFAULT_AGENT_MAX_TOOL_ROUNDS
@@ -83,8 +86,12 @@ function createAgentInstructions(settings: AppSettings, codexCliSize?: string) {
     '- When the requested task is complete, stop calling tools and provide the final response.',
   ]
 
-  if (codexCliSize && codexCliSize !== 'auto') {
-    instructions.push('', `- Start every image prompt with exactly "Generate at ${codexCliSize} resolution." followed by a space.`)
+  if (imageProfile.codexCli && params.size !== 'auto') {
+    instructions.push('', `- Start every image prompt with exactly "Generate at ${params.size} resolution." followed by a space.`)
+  }
+  if (imageProfile.codexCli || IS_SITE_MODE && imageProfile.provider === 'openai') {
+    const aspectInstruction = getImageAspectRatioInstruction(params.size)
+    if (aspectInstruction) instructions.push('', `- Append this composition instruction to every image prompt, including reference-image edits and batch items: "${aspectInstruction}"`)
   }
 
   if (settings.agentMathFormattingPrompt) instructions.push('', AGENT_MATH_FORMATTING_INSTRUCTIONS)
@@ -592,7 +599,7 @@ async function parseAgentStreamResponse(
   }
 }
 
-/** 请求 Agent 对话及工具调用；外站配置在上传或调用模型前直接拒绝。 */
+/** 请求 Agent 对话及工具调用，附带所选画幅的提示词策略；外站配置在上传或调用模型前直接拒绝。 */
 export async function callAgentResponsesApi(opts: {
   settings: AppSettings
   profile: ApiProfile
@@ -623,7 +630,7 @@ export async function callAgentResponsesApi(opts: {
   try {
     const body: Record<string, unknown> = {
       model: profile.model,
-      instructions: createAgentInstructions(settings, (imageProfile ?? profile).codexCli ? params.size : undefined),
+      instructions: createAgentInstructions(settings, params, imageProfile ?? profile),
       input,
       tools: createAgentTools(params, profile, settings, maskDataUrl),
     }
@@ -735,7 +742,7 @@ export interface BatchImageCallResult {
 }
 
 /**
- * 使用 Responses API 生成一张批量图片；请求前检查本站连接，禁止历史外站配置发起调用。
+ * 使用 Responses API 生成一张批量图片，本站或 Codex 请求明确附带画幅比例；先校验连接，保留现有工具参数。
  */
 export async function callBatchImageSingle(opts: {
   profile: ApiProfile
@@ -766,7 +773,10 @@ export async function callBatchImageSingle(opts: {
     const referenceMapping = referenceImageDataUrls.length > 0
       ? `Attached reference images correspond to these ids, in order: ${(referenceIds ?? []).map((id) => `<ref id="${id}" />`).join(', ') || 'reference images'}.`
       : ''
-    const promptText = allowPromptRewrite ? prompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${prompt}`
+    const aspectPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
+      ? appendImageAspectRatioPrompt(prompt, params.size)
+      : prompt
+    const promptText = allowPromptRewrite ? aspectPrompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
     const guardedPrompt = [referenceMapping, promptText].filter(Boolean).join('\n\n')
     let input: unknown
     if (referenceImageDataUrls.length > 0) {

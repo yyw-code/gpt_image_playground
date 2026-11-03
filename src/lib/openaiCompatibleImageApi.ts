@@ -29,7 +29,8 @@ import {
 import { getImageGenerationModel } from './imageModels'
 import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
-import { prependCodexCliSizePrompt } from './size'
+import { appendImageAspectRatioPrompt, prependCodexCliSizePrompt } from './size'
+import { IS_SITE_MODE } from './siteMode'
 
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
@@ -485,14 +486,18 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   return mergeConcurrentApiResults(results)
 }
 
+/** 提交单次 Images 生图或编辑；本站及 Codex 以额外构图提示保留比例，参数字段沿用原逻辑。 */
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
   const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
     ? prependCodexCliSizePrompt(originalPrompt, params.size)
     : originalPrompt
-  const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
-    ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${sizePrompt}`
+  const aspectPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
+    ? appendImageAspectRatioPrompt(sizePrompt, params.size)
     : sizePrompt
+  const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
+    ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
+    : aspectPrompt
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
@@ -688,13 +693,17 @@ function resolveTemplateValue(value: unknown, context: Record<string, unknown>):
   return value
 }
 
+/** 组装自定义供应商模板上下文；Codex 比例提示与原有参数兼容策略一起生效。 */
 function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) {
   const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
     ? prependCodexCliSizePrompt(opts.prompt, opts.params.size)
     : opts.prompt
-  const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
-    ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${sizePrompt}`
+  const aspectPrompt = profile.codexCli
+    ? appendImageAspectRatioPrompt(sizePrompt, opts.params.size)
     : sizePrompt
+  const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
+    ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
+    : aspectPrompt
   const params = {
     ...opts.params,
     ...(profile.codexCli ? { size: undefined, quality: undefined } : {}),
@@ -1030,11 +1039,15 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
   return mergeConcurrentApiResults(results)
 }
 
+/** 提交单次 Responses 图片工具请求；补充本站或 Codex 构图提示，保留原有工具参数和错误处理。 */
 async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
-  const requestPrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
+  const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
     ? prependCodexCliSizePrompt(prompt, params.size)
     : prompt
+  const requestPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
+    ? appendImageAspectRatioPrompt(sizePrompt, params.size)
+    : sizePrompt
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)

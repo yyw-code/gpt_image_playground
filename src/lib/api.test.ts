@@ -328,7 +328,7 @@ describe('callImageApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.size).toBeUndefined()
-    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt')
+    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt\n\nComposition: 1:1 aspect ratio, square canvas.')
   })
 
   it('does not add a size hint for auto in Codex CLI mode', async () => {
@@ -352,7 +352,7 @@ describe('callImageApi', () => {
     expect(body.prompt).toBe('prompt')
   })
 
-  it('does not append a size hint to Agent tool requests', async () => {
+  it('keeps the Agent size prefix without duplication and still appends the composition', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [{ b64_json: 'aW1hZ2U=' }],
     }), {
@@ -370,7 +370,7 @@ describe('callImageApi', () => {
 
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
-    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt')
+    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt\n\nComposition: 1:1 aspect ratio, square canvas.')
   })
 
   it('records actual params returned on Images API responses in Codex CLI mode', async () => {
@@ -1066,7 +1066,7 @@ describe('callImageApi', () => {
     for (const [, init] of fetchMock.mock.calls) {
       const body = JSON.parse(String((init as RequestInit).body))
       expect(body).toMatchObject({
-        prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt',
+        prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
         n: 1,
       })
       expect(body).not.toHaveProperty('size')
@@ -1076,7 +1076,7 @@ describe('callImageApi', () => {
     expect(result.actualParams).toMatchObject({ n: 3 })
   })
 
-  it('keeps custom prompts unchanged when Codex CLI prompt transforms are disabled', async () => {
+  it('adds the composition to custom prompts while skipping the old Codex CLI size prefix', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       data: [{ b64_json: 'aW1hZ2U=' }],
     }), {
@@ -1112,7 +1112,7 @@ describe('callImageApi', () => {
     })
 
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
-    expect(body).toEqual({ prompt: 'prompt' })
+    expect(body).toEqual({ prompt: 'prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.' })
   })
 
   it('keeps successful Codex CLI sync custom results when one request fails', async () => {
@@ -1207,7 +1207,7 @@ describe('callImageApi', () => {
     for (const [url, init] of submitCalls) {
       expect(url).toBe('https://api.example.com/v1/images/edits')
       const body = (init as RequestInit).body as FormData
-      expect(body.get('prompt')).toBe('Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt')
+      expect(body.get('prompt')).toBe('Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.')
       expect(body.get('size')).toBeNull()
       expect(body.get('quality')).toBeNull()
       expect(body.get('n')).toBe('1')
@@ -1272,7 +1272,7 @@ describe('callImageApi', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const submitBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
     expect(submitBody).toMatchObject({
-      prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt',
+      prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
       n: 3,
     })
     expect(submitBody).not.toHaveProperty('size')

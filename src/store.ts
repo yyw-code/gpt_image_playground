@@ -76,7 +76,7 @@ import { cleanStaleAgentInputDrafts, clearInputDraftState, isEmptyAgentInputDraf
 import { ALL_FAVORITES_COLLECTION_ID, DEFAULT_FAVORITE_COLLECTION_ID, createDefaultFavoriteCollection, deleteFavoriteCollectionState, ensureDefaultFavoriteCollection, getTaskFavoriteCollectionIds, mergeFavoriteCollections, normalizeFavoriteCollectionIds, normalizeFavoriteCollectionName, normalizeFavoriteCollections, normalizeFavoritePatch, normalizeLoadedFavoriteState, resolveDefaultFavoriteCollectionId, sameFavoriteCollectionIds } from './lib/favoriteState'
 import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
 import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
-import { stripInjectedCodexCliSizePrompt } from './lib/size'
+import { stripInjectedCodexCliSizePrompt, stripInjectedImageAspectRatioPrompt } from './lib/size'
 import { apiFetch, FetchConnectError, isTauri } from './lib/platform'
 import { pickSaveDir, saveFile, saveFileToDir, type SaveOptions } from './lib/saveFile'
 import { endDataProgress, setDataProgressCancelable, startDataProgress, updateDataProgress } from './lib/dataProgress'
@@ -3704,7 +3704,7 @@ async function executeAgentRound(
   }
 }
 
-/** 执行画廊任务；执行标识失效后忽略结果，并阻止分批生成提交后续请求。 */
+/** 执行画廊任务并清理本地提示词尾注用于改写比较；执行失效后忽略结果并阻止后续请求。 */
 async function executeTask(taskId: string) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -3810,8 +3810,14 @@ async function executeTask(taskId: string) {
     const actualParams = deriveGalleryActualParams(taskProvider, isAsyncCustomTask, result.actualParams, actualParamsList, outputIds.length)
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    const revisedPrompts = activeProfile.codexCli && task.sourceMode !== 'agent'
-      ? result.revisedPrompts?.map((prompt) => prompt == null ? prompt : stripInjectedCodexCliSizePrompt(prompt, requestPrompt, task.params.size))
+    const revisedPrompts = activeProfile.codexCli || IS_SITE_MODE && taskProvider === 'openai'
+      ? result.revisedPrompts?.map((prompt) => {
+          if (prompt == null) return prompt
+          const withoutAspect = stripInjectedImageAspectRatioPrompt(prompt, requestPrompt, task.params.size)
+          return activeProfile.codexCli && task.sourceMode !== 'agent'
+            ? stripInjectedCodexCliSizePrompt(withoutAspect, requestPrompt, task.params.size)
+            : withoutAspect
+        })
       : result.revisedPrompts
     const revisedPromptByImage = shouldStoreRevisedPrompts ? mapRevisedPromptsByImage(outputIds, revisedPrompts) : undefined
     const promptWasRevised = shouldStoreRevisedPrompts && revisedPrompts?.some(
