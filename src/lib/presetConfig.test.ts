@@ -87,8 +87,8 @@ describe('preset config policy', () => {
     expect(settings.profiles).toEqual([image, text, foreign])
     const rejected = policy.enforcePresetConfigPolicy({ ...settings, activeProfileId: 'old', agentTextProfileId: 'old', agentImageProfileId: 'old' })
     expect(rejected.activeProfileId).toBe('image')
-    expect(rejected.agentTextProfileId).toBe('text')
-    expect(rejected.agentImageProfileId).toBe('image')
+    expect(rejected.agentTextProfileId).toBeNull()
+    expect(rejected.agentImageProfileId).toBeNull()
     expect(rejected.profiles.find((profile) => profile.id === 'old')).toEqual(foreign)
   })
 

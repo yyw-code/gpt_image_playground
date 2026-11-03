@@ -3,6 +3,7 @@ import type {
   ApiProfile,
   ApiProvider,
   AppSettings,
+  AppMode,
   PresetAgentConfig,
   PresetConfig,
   AgentApiConfigMode,
@@ -160,10 +161,6 @@ function normalizeProviderOrder(value: unknown, customProviders: CustomProviderD
     .filter((id, idx, list) => knownIds.has(id) && list.indexOf(id) === idx)
 
   return [...ordered, ...providerIds.filter((id) => !ordered.includes(id))]
-}
-
-function normalizeAgentApiConfigMode(value: unknown): AgentApiConfigMode {
-  return value === 'native' || value === 'hybrid' ? value : 'off'
 }
 
 export function isAgentTextApiProfile(profile: ApiProfile): boolean {
@@ -711,7 +708,7 @@ function normalizeDeploymentProfileEntries(input: unknown, customProviderIds: Se
   })
 }
 
-/** 迁移新增内置 Grok 前的同名自定义服务商；同步改写配置、草稿和排序引用，不修改传入数据。 */
+/** 迁移旧同名自定义 Grok，同步两套配置、草稿和排序引用，不修改传入数据。 */
 function migrateLegacyGrokProviderConfig(record: Record<string, unknown>): Record<string, unknown> {
   if (!Array.isArray(record.customProviders)) return record
   const legacy = record.customProviders.find((provider) => isRecord(provider) && typeof provider.id === 'string' && provider.id.trim() === 'grok')
@@ -721,33 +718,42 @@ function migrateLegacyGrokProviderConfig(record: Record<string, unknown>): Recor
     isRecord(provider) && typeof provider.id === 'string' ? [provider.id.trim()] : [],
   ))
   const id = createCustomProviderId('legacy-grok', usedIds)
+  /** 两套配置使用相同协议重命名，避免 Agent 备份被误识别为内置 Grok。 */
+  const migrateProfiles = (profiles: unknown) => Array.isArray(profiles) ? profiles.map((profile) => {
+    if (!isRecord(profile)) return profile
+    const drafts = profile.providerDrafts
+    return {
+      ...profile,
+      provider: profile.provider === 'grok' ? id : profile.provider,
+      ...(isRecord(drafts) && Object.prototype.hasOwnProperty.call(drafts, 'grok')
+        ? { providerDrafts: Object.fromEntries(Object.entries(drafts).map(([provider, draft]) => [provider === 'grok' ? id : provider, draft])) }
+        : {}),
+    }
+  }) : profiles
   return {
     ...record,
     customProviders: record.customProviders.map((provider) => isRecord(provider) && typeof provider.id === 'string' && provider.id.trim() === 'grok' ? { ...provider, id, legacyProviderId: 'grok' } : provider),
-    profiles: Array.isArray(record.profiles) ? record.profiles.map((profile) => {
-      if (!isRecord(profile)) return profile
-      const drafts = profile.providerDrafts
-      return {
-        ...profile,
-        provider: profile.provider === 'grok' ? id : profile.provider,
-        ...(isRecord(drafts) && Object.prototype.hasOwnProperty.call(drafts, 'grok')
-          ? { providerDrafts: Object.fromEntries(Object.entries(drafts).map(([provider, draft]) => [provider === 'grok' ? id : provider, draft])) }
-          : {}),
-      }
-    }) : record.profiles,
+    profiles: migrateProfiles(record.profiles),
+    agentProfiles: migrateProfiles(record.agentProfiles),
     providerOrder: Array.isArray(record.providerOrder) ? record.providerOrder.map((provider) => provider === 'grok' ? id : provider) : record.providerOrder,
   }
+}
+
+/** 解析历史任务的配置归属；兼容只有 sourceMode 或会话 ID 的旧 Agent 任务。 */
+export function getTaskApiConfigScope(task: TaskRecord): AppMode {
+  return task.apiConfigScope ?? (task.sourceMode === 'agent' || task.agentConversationId ? 'agent' : 'gallery')
 }
 
 /** 按原 API 配置 ID 修复旧 Grok 自定义任务的服务商引用；缺少迁移标记时保持原记录。 */
 export function migrateLegacyGrokTask(task: TaskRecord, settings: AppSettings): TaskRecord {
   if (task.apiProvider !== 'grok') return task
-  const profile = settings.profiles.find((item) => item.id === task.apiProfileId)
+  const profiles = getTaskApiConfigScope(task) === 'agent' ? settings.agentProfiles : settings.profiles
+  const profile = profiles.find((item) => item.id === task.apiProfileId)
   const provider = settings.customProviders.find((item) => item.id === profile?.provider && item.legacyProviderId === 'grok')
   return provider ? { ...task, apiProvider: provider.id } : task
 }
 
-/** 恢复配置并迁移旧 Grok 引用；本站 Agent 仅回退至本站配置，保留外站原数据。 */
+/** 恢复两套配置；旧版共享配置复制到 Agent，后续不再跟随图片配置或猜测失效引用。 */
 export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSettings {
   const record = migrateLegacyGrokProviderConfig(input && typeof input === 'object' ? input as Record<string, unknown> : {})
   const customProviders = normalizeCustomProviderDefinitions(record.customProviders)
@@ -783,15 +789,20 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     ? record.activeProfileId
     : profiles[0].id
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
-  const agentApiConfigMode = normalizeAgentApiConfigMode(record.agentApiConfigMode)
-  const agentProfiles = IS_SITE_MODE ? profiles.filter(isSiteApiProfile) : profiles
+  const agentApiConfigMode = record.agentApiConfigMode === 'hybrid' ? 'hybrid' : 'native'
+  const legacyAgentProfiles = record.agentProfiles === undefined
+  const agentInputs = Array.isArray(record.agentProfiles) ? record.agentProfiles : legacyAgentProfiles ? profiles : []
+  const savedAgentProfiles = agentInputs.map((profile) =>
+    normalizeApiProfile(profile, undefined, customProviderIds, nativeTransparentProviderIds),
+  )
+  const agentProfiles = IS_SITE_MODE ? savedAgentProfiles.filter(isSiteApiProfile) : savedAgentProfiles
   const firstAgentTextProfile = agentProfiles.find(isAgentTextApiProfile)
   const agentTextProfileId = typeof record.agentTextProfileId === 'string' && agentProfiles.some((p) => p.id === record.agentTextProfileId && isAgentTextApiProfile(p))
     ? record.agentTextProfileId
-    : (agentProfiles.some((p) => p.id === active.id) && isAgentTextApiProfile(active) ? active.id : firstAgentTextProfile?.id ?? null)
+    : legacyAgentProfiles ? (agentProfiles.some((p) => p.id === active.id) && isAgentTextApiProfile(active) ? active.id : firstAgentTextProfile?.id ?? null) : null
   const agentImageProfileId = typeof record.agentImageProfileId === 'string' && agentProfiles.some((p) => p.id === record.agentImageProfileId)
     ? record.agentImageProfileId
-    : agentProfiles.find((p) => p.id === active.id)?.id ?? agentProfiles[0]?.id ?? null
+    : legacyAgentProfiles ? agentProfiles.find((p) => p.id === active.id)?.id ?? agentProfiles[0]?.id ?? null : null
 
   return {
     baseUrl: active.baseUrl,
@@ -834,22 +845,24 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     agentApiConfigMode,
     agentTextProfileId,
     agentImageProfileId,
+    agentProfiles: savedAgentProfiles,
     profiles,
     activeProfileId,
   }
 }
 
+/** 读取 Agent 专用文本配置；不存在时返回空，不借用画廊配置。 */
 export function getAgentTextApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile | null {
   const normalized = normalizeSettings(settings)
-  if (normalized.agentApiConfigMode === 'off') return getActiveApiProfile(normalized)
-  const profile = normalized.profiles.find((item) => item.id === normalized.agentTextProfileId)
+  const profile = normalized.agentProfiles.find((item) => item.id === normalized.agentTextProfileId)
   return profile ? resolveApiProfileModel(profile) : null
 }
 
+/** 原生模式使用文本配置的生图工具，混合模式读取 Agent 专用图片配置。 */
 export function getAgentImageApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile | null {
   const normalized = normalizeSettings(settings)
   if (normalized.agentApiConfigMode !== 'hybrid') return getAgentTextApiProfile(normalized)
-  const profile = normalized.profiles.find((item) => item.id === normalized.agentImageProfileId)
+  const profile = normalized.agentProfiles.find((item) => item.id === normalized.agentImageProfileId)
   return profile ? resolveApiProfileModel(profile) : null
 }
 
@@ -1156,7 +1169,7 @@ export function findEquivalentApiProfile(
 }
 
 /** 合并备份或链接配置；本站冲突连接另存，并通过 profileIdMap 返回改名映射，供导入方同步任务引用。 */
-export function mergeImportedSettings(
+function mergeImportedImageSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
   options: { preserveInternalIds?: boolean; profileIdMap?: Map<string, string> } = {},
@@ -1276,7 +1289,7 @@ function mergePresetProfileSnapshot(previous: ApiProfile, imported: ApiProfile, 
 }
 
 /** 合并部署预置并迁移旧 Grok；按本站实际别名应用更新，连接变化时另建空密钥配置。 */
-export function mergePresetImportedSettings(
+function mergePresetImageSettings(
   currentSettings: Partial<AppSettings> | unknown,
   importedSettings: Partial<AppSettings> | unknown,
   options: {
@@ -1425,7 +1438,60 @@ export function mergePresetImportedSettings(
   }
 }
 
+/** 合并图片配置及显式导入的 Agent 备份；普通图片配置导入不会改写 Agent。 */
+export function mergeImportedSettings(
+  currentSettings: Partial<AppSettings> | unknown,
+  importedSettings: Partial<AppSettings> | unknown,
+  options: { preserveInternalIds?: boolean; profileIdMap?: Map<string, string>; agentProfileIdMap?: Map<string, string> } = {},
+): AppSettings {
+  const current = normalizeSettings(currentSettings)
+  const image = mergeImportedImageSettings(currentSettings, importedSettings, options)
+  const record = isRecord(importedSettings) ? importedSettings : {}
+  if (!Array.isArray(record.agentProfiles) && !options.preserveInternalIds) {
+    return normalizeSettings({ ...image, agentProfiles: current.agentProfiles, agentApiConfigMode: current.agentApiConfigMode, agentTextProfileId: current.agentTextProfileId, agentImageProfileId: current.agentImageProfileId })
+  }
+  const imported = normalizeSettings(importedSettings)
+  const agent = current.agentProfiles.length ? mergeImportedImageSettings(
+    { ...current, profiles: current.agentProfiles, agentProfiles: [], activeProfileId: current.agentTextProfileId },
+    { ...imported, profiles: imported.agentProfiles, agentProfiles: [] },
+    { ...options, profileIdMap: options.agentProfileIdMap },
+  ) : { ...imported, profiles: imported.agentProfiles.map((profile) => ({ ...profile, isDefault: undefined })) }
+  return normalizeSettings({
+    ...image,
+    agentProfiles: imported.agentProfiles.length ? agent.profiles : current.agentProfiles,
+    agentApiConfigMode: imported.agentApiConfigMode,
+    agentTextProfileId: options.agentProfileIdMap?.get(imported.agentTextProfileId ?? '') ?? imported.agentTextProfileId,
+    agentImageProfileId: options.agentProfileIdMap?.get(imported.agentImageProfileId ?? '') ?? imported.agentImageProfileId,
+  })
+}
+
+/** 同一部署预置分别合并到两套配置，沿用既有地址变更、参数锁定及密钥保留规则。 */
+export function mergePresetImportedSettings(
+  currentSettings: Partial<AppSettings> | unknown,
+  importedSettings: Partial<AppSettings> | unknown,
+  options: Parameters<typeof mergePresetImageSettings>[2] = {},
+): { settings: AppSettings; presetConfig: PresetConfig } {
+  const current = normalizeSettings(currentSettings)
+  const image = mergePresetImageSettings(currentSettings, importedSettings, options)
+  const agent = mergePresetImageSettings(
+    { ...current, profiles: current.agentProfiles.length ? current.agentProfiles : [createDefaultOpenAIProfile()], activeProfileId: current.agentTextProfileId ?? '' },
+    importedSettings,
+    { ...options, dismissedPresetProfileIds: [] },
+  )
+  const next = agent.settings
+  // 预置选择必须基于 Agent 自己合并后的配置验证，不能被画廊的同名配置影响。
+  const previous = getPresetAgentSettings(options.previousPresetConfig?.agent)
+  const selection = Object.fromEntries(Object.entries(getPresetAgentSettings(image.presetConfig.agent))
+    .filter(([key, value]) => options.lockPresetParams || value !== previous[key as keyof AppSettings]))
+  const migrated = normalizeSettings({ ...next, ...selection, agentProfiles: next.profiles })
+  return {
+    ...image,
+    settings: normalizeSettings({ ...image.settings, agentProfiles: next.profiles, agentApiConfigMode: migrated.agentApiConfigMode, agentTextProfileId: migrated.agentTextProfileId, agentImageProfileId: migrated.agentImageProfileId }),
+  }
+}
+
 export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
+  agentProfiles: [],
   profiles: [createDefaultOpenAIProfile()],
   baseUrl: DEFAULT_BASE_URL,
   apiKey: DEFAULT_API_URL_PATCH?.apiKey ?? '',

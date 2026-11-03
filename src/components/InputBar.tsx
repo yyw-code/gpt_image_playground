@@ -1,9 +1,10 @@
 import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
+import Select from './Select'
 import { deleteFavoriteCollection, useStore, submitTask, submitAgentMessage, stopAgentResponse, stopBatchPrompts, addImageFromFile, removeMultipleTasks, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, MAX_INPUT_IMAGES, type TaskRecord } from '../types'
 import { getActiveAgentRounds } from '../lib/agentConversationState'
-import { getActiveApiProfile, getAgentImageApiProfile, normalizeSettings, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
+import { createDefaultOpenAIProfile, getActiveApiProfile, getAgentTextApiProfile, getAgentImageApiProfile, normalizeSettings, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
 import { getImageGenerationModel, isGptImage25Model } from '../lib/imageModels'
 import { MAX_GROK_INPUT_IMAGES } from '../lib/grokImage'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
@@ -86,7 +87,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
-/** 维护输入草稿并按当前图片配置展示能力及参考图限制。 */
+/** 维护输入草稿，按工作区展示独立模型、生成参数及参考图限制，保留历史配置临时复用的请求归属。 */
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
@@ -102,6 +103,7 @@ export default function InputBar() {
   const batchProgress = useStore((s) => s.batchProgress)
   const settings = useStore((s) => s.settings)
   const reusedTaskApiProfileId = useStore((s) => s.reusedTaskApiProfileId)
+  const reusedTaskApiProfileScope = useStore((s) => s.reusedTaskApiProfileScope)
   const reusedTaskApiModel = useStore((s) => s.reusedTaskApiModel)
   const setReusedTaskApiModel = useStore((s) => s.setReusedTaskApiModel)
   const setShowSettings = useStore((s) => s.setShowSettings)
@@ -432,22 +434,25 @@ export default function InputBar() {
   const isMobile = useIsMobile()
 
   const settingsActiveProfile = useMemo(() => getActiveApiProfile(settings), [settings])
+  const agentTextProfile = useMemo(() => getAgentTextApiProfile(settings), [settings])
   const currentActiveProfile = useMemo(() => (
     appMode === 'agent'
-      ? getAgentImageApiProfile(settings) ?? settingsActiveProfile
+      ? getAgentImageApiProfile(settings) ?? createDefaultOpenAIProfile({ id: 'agent-unconfigured', name: '未配置 Agent', apiKey: '', apiMode: settings.agentApiConfigMode === 'hybrid' ? 'images' : 'responses' })
       : settingsActiveProfile
   ), [appMode, settings, settingsActiveProfile])
   const activeProfile = useMemo(() => {
     const reusedProfile = appMode !== 'agent' && settings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId
-      ? settings.profiles.find((profile) => profile.id === reusedTaskApiProfileId)
+      ? (reusedTaskApiProfileScope === 'agent' ? settings.agentProfiles : settings.profiles).find((profile) => profile.id === reusedTaskApiProfileId)
       : undefined
     return reusedProfile ? resolveApiProfileModel(reusedProfile, reusedTaskApiModel ?? undefined) : currentActiveProfile
-  }, [appMode, currentActiveProfile, reusedTaskApiModel, reusedTaskApiProfileId, settings])
-  const isTemporarilyReusedProfile = activeProfile.id !== currentActiveProfile.id
+  }, [appMode, currentActiveProfile, reusedTaskApiModel, reusedTaskApiProfileId, reusedTaskApiProfileScope, settings])
+  const isTemporarilyReusedProfile = appMode !== 'agent' && Boolean(reusedTaskApiProfileId) && (reusedTaskApiProfileScope === 'agent' || activeProfile.id !== currentActiveProfile.id)
+  const profilePool = appMode === 'agent' || isTemporarilyReusedProfile && reusedTaskApiProfileScope === 'agent' ? settings.agentProfiles : settings.profiles
   const modelOptions = useMemo(() => (
-    splitModelList(settings.profiles.find((profile) => profile.id === activeProfile.id)?.model ?? activeProfile.model)
+    splitModelList(profilePool.find((profile) => profile.id === activeProfile.id)?.model ?? activeProfile.model)
       .map((model) => ({ label: model, value: model }))
-  ), [activeProfile.id, activeProfile.model, settings.profiles])
+  ), [activeProfile.id, activeProfile.model, profilePool])
+  /** 模型选择只写入当前工作区；临时复用历史配置时只改本次请求的模型。 */
   const handleModelChange = useCallback((model: string) => {
     // 临时复用其他配置时只切换本次复用的模型，不改动该配置记住的选择
     if (isTemporarilyReusedProfile) {
@@ -455,19 +460,17 @@ export default function InputBar() {
       return
     }
     setSettings({
-      profiles: settings.profiles.map((profile) => profile.id === activeProfile.id ? { ...profile, selectedModel: model } : profile),
+      [appMode === 'agent' ? 'agentProfiles' : 'profiles']: profilePool.map((profile) => profile.id === activeProfile.id ? { ...profile, selectedModel: model } : profile),
     })
-  }, [activeProfile.id, isTemporarilyReusedProfile, setReusedTaskApiModel, setSettings, settings.profiles])
+  }, [activeProfile.id, appMode, isTemporarilyReusedProfile, setReusedTaskApiModel, setSettings, profilePool])
   const activeAgentConversation = appMode === 'agent'
     ? agentConversations.find((conversation) => conversation.id === activeAgentConversationId) ?? null
     : null
   const activeAgentIsRunning = Boolean(activeAgentConversation?.rounds.some((round) => round.status === 'running'))
   const effectiveSettings = useMemo(() => (
-    activeProfile.id === settingsActiveProfile.id
-      ? settings
-      : normalizeSettings({ ...settings, activeProfileId: activeProfile.id })
-  ), [activeProfile.id, settingsActiveProfile.id, settings])
-  const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
+    normalizeSettings({ ...settings, profiles: [...settings.profiles.filter((profile) => profile.id !== activeProfile.id), activeProfile], activeProfileId: activeProfile.id })
+  ), [activeProfile, settings])
+  const hasSubmitApiConfig = Boolean(activeProfile.apiKey && (appMode !== 'agent' || agentTextProfile?.apiKey))
   // 批量进行中暂停画廊和 Agent 的提交，需等待完成或停止后再提交
   const batchRunning = Boolean(batchProgress)
   const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig && !activeAgentIsRunning && !batchRunning)
@@ -1684,6 +1687,21 @@ export default function InputBar() {
       activeProfile={activeProfile}
       modelOptions={modelOptions}
       onModelChange={handleModelChange}
+      modelLabel={activeProfile.apiMode === 'responses' ? '对话' : '图片'}
+      textModelControl={appMode === 'agent' && settings.agentApiConfigMode === 'hybrid' ? (
+        <Select
+          value={agentTextProfile?.model ?? ''}
+          options={splitModelList(settings.agentProfiles.find((profile) => profile.id === agentTextProfile?.id)?.model ?? '')
+            .map((model) => ({ label: model, value: model }))}
+          onChange={(value) => setSettings({
+            agentProfiles: settings.agentProfiles.map((profile) => profile.id === agentTextProfile?.id
+              ? { ...profile, selectedModel: String(value) } : profile),
+          })}
+          disabled={!agentTextProfile}
+          prefix={<span className="mr-1.5 text-gray-400">对话</span>}
+          className={selectClass}
+        />
+      ) : undefined}
       isFalProvider={isFalProvider}
       isFalTextToImage={isFalTextToImage}
       displaySize={displaySize}

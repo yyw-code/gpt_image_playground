@@ -189,6 +189,8 @@ export interface AppSettings {
   agentApiConfigMode: AgentApiConfigMode
   agentTextProfileId?: string | null
   agentImageProfileId?: string | null
+  /** Agent 专用配置副本；与图片配置使用独立存储，旧版由归一化入口迁移。 */
+  agentProfiles: ApiProfile[]
   profiles: ApiProfile[]
   activeProfileId: string
 }
@@ -261,6 +263,8 @@ export interface TaskRecord {
   apiProvider?: ApiProvider
   /** 生成时使用的 API 配置 ID */
   apiProfileId?: string
+  /** 配置所属工作区；旧任务按来源或会话 ID 判断，防止同 ID 跨模块取错密钥。 */
+  apiConfigScope?: AppMode
   /** 生成时使用的 Provider 名称 */
   apiProfileName?: string
   /** 生成时使用的 API 模式 */
@@ -536,7 +540,8 @@ export interface ExportData {
     index: number
     total: number
   }
-  settings?: Omit<AppSettings, 'customProviders'> & { customProviders?: CustomProviderDefinition[] }
+  /** 旧备份可能没有 Agent 专用配置，由导入归一化入口迁移。 */
+  settings?: Omit<AppSettings, 'customProviders' | 'agentProfiles'> & { customProviders?: CustomProviderDefinition[]; agentProfiles?: ApiProfile[] }
   tasks?: TaskRecord[]
   favoriteCollections?: FavoriteCollection[]
   defaultFavoriteCollectionId?: string | null

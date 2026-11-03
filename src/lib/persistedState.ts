@@ -12,6 +12,8 @@ export interface PersistedAppState {
   dismissedPresetProfileIds?: string[]
   dismissedPresetProviderIds?: string[]
   params: TaskParams
+  galleryParams?: TaskParams
+  agentParams?: TaskParams
   prompt?: string
   inputImages?: InputImage[]
   dismissedCodexCliPrompts: string[]
@@ -93,6 +95,7 @@ function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
   }
 }
 
+/** 保存两套独立参数及输入草稿；params 保留为当前工作区的兼容字段。 */
 export function createPersistedState(state: PersistedStateSource, includeLegacyAgentConversations = false): PersistedAppState {
   const settings = normalizeSettings(state.settings)
   const galleryInputDraft = saveGalleryInputDraft(state)
@@ -102,6 +105,8 @@ export function createPersistedState(state: PersistedStateSource, includeLegacyA
     dismissedPresetProfileIds: state.dismissedPresetProfileIds ?? [],
     dismissedPresetProviderIds: state.dismissedPresetProviderIds ?? [],
     params: state.params,
+    galleryParams: state.appMode === 'gallery' ? state.params : state.galleryParams ?? state.params,
+    agentParams: state.appMode === 'agent' ? state.params : state.agentParams ?? state.params,
     ...(settings.persistInputOnRestart && (state.appMode === 'gallery' || galleryInputDraft)
       ? {
           prompt: galleryInputDraft?.prompt ?? '',
@@ -137,6 +142,7 @@ export function migratePersistedState(persistedState: unknown, _version?: number
   }
 }
 
+/** 恢复独立配置和参数；旧版共享参数复制到两边，后续修改互不影响。 */
 export function normalizePersistedState(
   persistedState: unknown,
   fallback: PersistedStateFallback,
@@ -166,6 +172,9 @@ export function normalizePersistedState(
     ? persistedState.activeAgentConversationId
     : agentConversations[0]?.id ?? null
   const appMode = persistedState.appMode === 'agent' ? 'agent' : 'gallery'
+  const legacyParams = normalizeParams(persistedState.params, fallback.params)
+  const galleryParams = normalizeParams(persistedState.galleryParams, { ...legacyParams })
+  const agentParams = normalizeParams(persistedState.agentParams, { ...legacyParams })
   const galleryInputDraft = settings.persistInputOnRestart
     ? normalizeAgentInputDraft(persistedState.galleryInputDraft ?? {
         prompt: persistedState.prompt,
@@ -207,7 +216,9 @@ export function normalizePersistedState(
       previousPresetConfig,
       dismissedPresetProfileIds: normalizeStringArray(persistedState.dismissedPresetProfileIds, fallback.dismissedPresetProfileIds ?? []),
       dismissedPresetProviderIds: normalizeStringArray(persistedState.dismissedPresetProviderIds, fallback.dismissedPresetProviderIds ?? []),
-      params: normalizeParams(persistedState.params, fallback.params),
+      params: appMode === 'agent' ? agentParams : galleryParams,
+      galleryParams,
+      agentParams,
       dismissedCodexCliPrompts: normalizeStringArray(persistedState.dismissedCodexCliPrompts, fallback.dismissedCodexCliPrompts),
       appMode,
       galleryInputDraft: galleryInputDraft && !isEmptyAgentInputDraft(galleryInputDraft) ? galleryInputDraft : null,

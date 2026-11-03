@@ -43,7 +43,7 @@ describe('当前配置的模型查询状态', () => {
     await act(async () => p.container.querySelector('button')!.click())
     expect(fetchMock).toHaveBeenCalledWith(profile, expect.any(AbortSignal))
     expect(p.container.textContent).toContain('已获取 2 个模型')
-    for (const label of ['模型 ID', '图像生成模型']) {
+    for (const label of ['文本模型 ID', '图像工具模型']) {
       act(() => p.container.querySelector<HTMLButtonElement>(`[aria-label="选择${label}"]`)!.click())
     }
     expect(p.container.querySelectorAll('[role="option"]')).toHaveLength(6)
@@ -63,7 +63,7 @@ describe('当前配置的模型查询状态', () => {
     expect(signal.aborted).toBe(true)
     await act(async () => finish(['old-model-discovered']))
     expect(p.container.textContent).not.toContain('已获取')
-    act(() => p.container.querySelector<HTMLButtonElement>('[aria-label="选择模型 ID"]')!.click())
+    act(() => p.container.querySelector<HTMLButtonElement>('[aria-label="选择文本模型 ID"]')!.click())
     expect(p.container.textContent).not.toContain('old-model-discovered')
     expect(p.commit).not.toHaveBeenCalled()
   })
@@ -86,11 +86,24 @@ describe('当前配置的模型查询状态', () => {
     fetchMock.mockImplementation(() => new Promise(() => {}))
     const p = renderFields()
     p.render({ ...profile, apiKey: '' })
-    expect(p.container.querySelector('button')!.disabled).toBe(true)
+    const button = p.container.querySelector('button')!
+    expect(button.disabled).toBe(true)
+    expect(button.textContent).toBe('获取模型')
+    const status = p.container.querySelector('[role="status"]')!
+    expect(button.getAttribute('aria-describedby')).toBe(status.id)
+    expect(status.textContent).toContain('请先填写上方个人 API Key')
+    act(() => button.click())
+    expect(fetchMock).not.toHaveBeenCalled()
     p.render(profile, true)
     expect(p.container.querySelector('button')!.disabled).toBe(true)
+    expect(status.textContent).toContain('当前配置已锁定')
     p.render()
+    expect(button.disabled).toBe(false)
     act(() => p.container.querySelector('button')!.click())
+    expect(button.textContent).toBe('正在获取模型…')
+    expect(button.disabled).toBe(true)
+    act(() => button.click())
+    expect(fetchMock).toHaveBeenCalledOnce()
     const signal = fetchMock.mock.calls[0][1]!
     act(() => root!.unmount())
     root = null
@@ -100,7 +113,7 @@ describe('当前配置的模型查询状态', () => {
   it('Images 模式只显示主模型，其他供应商沿用手动填写', () => {
     const p = renderFields()
     p.render({ ...profile, apiMode: 'images' })
-    expect(p.container.querySelector('[aria-label="选择图像生成模型"]')).toBeNull()
+    expect(p.container.querySelector('[aria-label="选择图像工具模型"]')).toBeNull()
     p.render({ ...profile, provider: 'fal' })
     expect(p.container.querySelector('button')).toBeNull()
     expect(p.container.querySelector('input')).not.toBeNull()

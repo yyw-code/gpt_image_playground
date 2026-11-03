@@ -23,7 +23,7 @@ import type {
   StoredImageThumbnail,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, migrateLegacyGrokTask, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_SETTINGS, getTaskApiConfigScope, getActiveApiProfile, getAgentImageApiProfile, getAgentTextApiProfile, getCustomProviderDefinition, mergeImportedSettings, mergePresetImportedSettings, migrateLegacyGrokTask, normalizeSettings, resolveApiProfileModel, splitModelList, validateApiProfile } from './lib/apiProfiles'
 import { enforcePresetConfigPolicy, getPresetConfig, getPresetProfileIds, getPresetProfileSourceId, getPresetProviderIds, isPresetConfigDeletionPrevented, isPresetConfigOnlyEnabled, isPresetConfigParamsLocked, isPresetProfile, isPresetProviderDeletionPrevented } from './lib/presetConfig'
 import { IS_SITE_MODE } from './lib/siteMode'
 import { isSiteApiProfile } from './lib/siteProfiles'
@@ -337,13 +337,16 @@ interface AppState {
 
   // 参数
   params: TaskParams
+  galleryParams: TaskParams
+  agentParams: TaskParams
   setParams: (p: Partial<TaskParams>) => void
   reusedTaskApiProfileId: string | null
+  reusedTaskApiProfileScope: AppMode
   reusedTaskApiProfileName: string | null
   reusedTaskApiProfileMissing: boolean
   /** 临时复用其他配置时使用的模型，只在本次复用中生效，不写入该配置 */
   reusedTaskApiModel: string | null
-  setReusedTaskApiProfile: (profileId: string | null, missing?: boolean, profileName?: string | null, model?: string | null) => void
+  setReusedTaskApiProfile: (profileId: string | null, missing?: boolean, profileName?: string | null, model?: string | null, scope?: AppMode) => void
   setReusedTaskApiModel: (model: string) => void
   /** 正在进行的批量提交进度，仅保存在内存中 */
   batchProgress: BatchProgress | null
@@ -535,13 +538,17 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       // Mode
       appMode: 'gallery',
+      /** 切换工作区并保存当前草稿和参数；配置校验始终使用目标工作区。 */
       setAppMode: (appMode) => {
+        if (get().appMode === appMode) return
         if (appMode === 'gallery') {
           const state = get()
           const agentInputDrafts = saveActiveAgentInputDrafts(state)
           const galleryInputDraft = saveGalleryInputDraft(state)
           set((state) => ({
             appMode,
+            agentParams: state.params,
+            params: state.galleryParams,
             agentInputDrafts,
             galleryInputDraft,
             agentMobileHeaderVisible: true,
@@ -555,13 +562,14 @@ export const useStore = create<AppState>()(
 
         const state = get()
         const settings = normalizeSettings(state.settings)
-        const activeProfile = getActiveApiProfile(settings)
         const agentValidationError = getAgentProfileValidationError(settings)
 
         if (!agentValidationError) {
           const galleryInputDraft = saveGalleryInputDraft(state)
           set((state) => ({
             appMode: 'agent',
+            galleryParams: state.params,
+            params: state.agentParams,
             galleryInputDraft,
             agentMobileHeaderVisible: false,
             agentSidebarCollapsed: true,
@@ -573,40 +581,12 @@ export const useStore = create<AppState>()(
           return
         }
 
-        if (settings.agentApiConfigMode === 'off' && activeProfile.provider === 'openai' && activeProfile.apiMode !== 'responses') {
-          state.setConfirmDialog({
-            title: '需要 Responses API 配置',
-            message: `当前配置「${activeProfile.name}」使用的是 Images API，仅支持生成图片，无 Agent 模式需要的对话能力。\n\n请前往 API 配置页，将当前配置调整为 Responses API，或切换/新建一个支持 Responses API 的配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'api')
-            },
-          })
-          return
-        }
-
-        if (settings.agentApiConfigMode !== 'off') {
-          state.setConfirmDialog({
-            title: 'Agent API 配置不完整',
-            message: `${agentValidationError.message}\n\n请前往 Agent 配置页，选择或新建可用配置。`,
-            confirmText: '去设置',
-            cancelText: '取消',
-            action: () => {
-              useStore.getState().setShowSettings(true, 'agent')
-            },
-          })
-          return
-        }
-
         state.setConfirmDialog({
-          title: '配置不支持 Agent 模式',
-          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 OpenAI 配置。\n\n请前往 API 配置页，切换或新建一个支持 Responses API 的配置。`,
+          title: 'Agent 配置不完整',
+          message: `${agentValidationError.message}\n\n请前往 Agent 配置页，选择或新建 Agent 专用配置。`,
           confirmText: '去设置',
           cancelText: '取消',
-          action: () => {
-            useStore.getState().setShowSettings(true, 'api')
-          },
+          action: () => useStore.getState().setShowSettings(true, 'agent'),
         })
       },
 
@@ -670,7 +650,7 @@ export const useStore = create<AppState>()(
         const settings = normalizeSettings(enforcePresetConfigPolicy(merged, {
           dismissedPresetProviderIds: effectiveDismissedPresetProviderIds,
         }))
-        const shouldClearReusedProfile = st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
+        const shouldClearReusedProfile = st.reusedTaskApiProfileScope === 'gallery' && st.reusedTaskApiProfileId && settings.activeProfileId === st.reusedTaskApiProfileId
         return {
           settings,
           ...(shouldClearReusedProfile
@@ -702,7 +682,7 @@ export const useStore = create<AppState>()(
             normalizeSettings(transform?.(merged.settings) ?? merged.settings),
             { dismissedPresetProviderIds: effectiveDismissedPresetProviderIds, dismissedPresetProfileIds, restoreSitePresets: true },
           ))
-          const shouldClearReusedProfile = state.reusedTaskApiProfileId && settings.activeProfileId === state.reusedTaskApiProfileId
+          const shouldClearReusedProfile = state.reusedTaskApiProfileScope === 'gallery' && state.reusedTaskApiProfileId && settings.activeProfileId === state.reusedTaskApiProfileId
           return {
             settings,
             previousPresetConfig: getPresetConfig() ? merged.presetConfig : null,
@@ -807,13 +787,22 @@ export const useStore = create<AppState>()(
 
       // Params
       params: { ...DEFAULT_PARAMS },
-      setParams: (p) => set((s) => ({ params: { ...s.params, ...p } })),
+      galleryParams: { ...DEFAULT_PARAMS },
+      agentParams: { ...DEFAULT_PARAMS },
+      /** 更新当前工作区的图片参数，不修改另一个工作区记住的参数。 */
+      setParams: (p) => set((s) => {
+        const params = { ...s.params, ...p }
+        return { params, [s.appMode === 'agent' ? 'agentParams' : 'galleryParams']: params }
+      }),
       reusedTaskApiProfileId: null,
+      reusedTaskApiProfileScope: 'gallery',
       reusedTaskApiProfileName: null,
       reusedTaskApiProfileMissing: false,
       reusedTaskApiModel: null,
-      setReusedTaskApiProfile: (profileId, missing = false, profileName = null, model = null) => set({
+      /** 临时复用历史配置时同时记录所属工作区，隔离同名 ID 和模型选择。 */
+      setReusedTaskApiProfile: (profileId, missing = false, profileName = null, model = null, scope = 'gallery') => set({
         reusedTaskApiProfileId: profileId,
+        reusedTaskApiProfileScope: scope,
         reusedTaskApiProfileName: profileName,
         reusedTaskApiProfileMissing: missing,
         reusedTaskApiModel: profileId ? model : null,
@@ -1041,11 +1030,12 @@ export const useStore = create<AppState>()(
       },
       showSettings: false,
       settingsTabRequest: null,
+      /** 从当前工作区打开对应配置页，显式指定的页签优先。 */
       setShowSettings: (showSettings, settingsTabRequest) => {
         if (showSettings) dismissAllTooltips()
         set({
           showSettings,
-          ...(settingsTabRequest ? { settingsTabRequest } : {}),
+          ...(showSettings ? { settingsTabRequest: settingsTabRequest ?? (get().appMode === 'agent' ? 'agent' : 'api') } : {}),
           ...(!showSettings ? { settingsTabRequest: null } : {}),
         })
       },
@@ -1250,14 +1240,17 @@ function getCustomRecoveryProfile(settings: AppSettings, task: TaskRecord) {
   return null
 }
 
+/** 按任务记录的工作区解析原配置及模型，不使用另一工作区的同 ID 配置。 */
 export function getTaskApiProfile(settings: AppSettings, task: TaskRecord): ApiProfile | null {
   const normalized = normalizeSettings(settings)
   if (!task.apiProfileId) return null
-  const profile = normalized.profiles.find((item) => item.id === task.apiProfileId)
+  const scope = getTaskApiConfigScope(task)
+  const profile = (scope === 'agent' ? normalized.agentProfiles : normalized.profiles).find((item) => item.id === task.apiProfileId)
   // 任务记录的模型仍在配置的模型列表中时，沿用任务提交时的模型
   return profile ? resolveApiProfileModel(profile, task.apiModel) : null
 }
 
+/** 为单次请求创建配置快照；Agent 配置可临时放入请求池，不写回图片设置。 */
 function createSettingsForApiProfile(settings: AppSettings, profile: ApiProfile): AppSettings {
   const normalized = normalizeSettings(settings)
   return normalizeSettings({
@@ -1269,11 +1262,12 @@ function createSettingsForApiProfile(settings: AppSettings, profile: ApiProfile)
     apiMode: profile.apiMode,
     codexCli: profile.codexCli,
     apiProxy: profile.apiProxy,
-    profiles: normalized.profiles.map((item) => item.id === profile.id ? profile : item),
+    profiles: [...normalized.profiles.filter((item) => item.id !== profile.id), profile],
     activeProfileId: profile.id,
   })
 }
 
+/** 校验 Agent 专用对话配置及混合生图配置，返回用户可处理的缺失原因。 */
 function getAgentProfileValidationError(settings: AppSettings): { profile: ApiProfile | null; message: string } | null {
   const normalized = normalizeSettings(settings)
   const textProfile = getAgentTextApiProfile(normalized)
@@ -1293,9 +1287,11 @@ function getAgentProfileValidationError(settings: AppSettings): { profile: ApiPr
   return null
 }
 
-function getReusedTaskApiProfile(settings: AppSettings, profileId: string | null, model: string | null): ApiProfile | null {
+/** 从指定工作区读取临时复用配置，配置缺失时由提交入口提示确认。 */
+function getReusedTaskApiProfile(settings: AppSettings, profileId: string | null, model: string | null, scope: AppMode): ApiProfile | null {
   if (!profileId) return null
-  const profile = normalizeSettings(settings).profiles.find((item) => item.id === profileId)
+  const normalized = normalizeSettings(settings)
+  const profile = (scope === 'agent' ? normalized.agentProfiles : normalized.profiles).find((item) => item.id === profileId)
   return profile ? resolveApiProfileModel(profile, model ?? undefined) : null
 }
 
@@ -1710,16 +1706,17 @@ export async function initStore() {
   }
 }
 
-/** 校验图片能力后提交新任务；不支持的 Grok 草稿在任何持久化及批量占位之前拒绝。 */
+/** 校验图片能力并快照请求配置归属后提交任务，批量执行不受后续页面选择影响。 */
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
-  const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, reusedTaskApiModel, showToast, setConfirmDialog } =
+  const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileScope, reusedTaskApiProfileName, reusedTaskApiProfileMissing, reusedTaskApiModel, showToast, setConfirmDialog } =
     useStore.getState()
 
   const normalizedSettings = normalizeSettings(settings)
   let activeProfile = getActiveApiProfile(settings)
   let requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
+  let requestScope: AppMode = 'gallery'
   if (normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
-    const reusedProfile = getReusedTaskApiProfile(normalizedSettings, reusedTaskApiProfileId, reusedTaskApiModel)
+    const reusedProfile = getReusedTaskApiProfile(normalizedSettings, reusedTaskApiProfileId, reusedTaskApiModel, reusedTaskApiProfileScope)
     if (!reusedProfile) {
       if (options.useCurrentApiProfileWhenReusedMissing) {
         useStore.getState().setReusedTaskApiProfile(null)
@@ -1737,6 +1734,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       }
     } else {
       activeProfile = reusedProfile
+      requestScope = reusedTaskApiProfileScope
       requestSettings = createSettingsForApiProfile(normalizedSettings, reusedProfile)
     }
   }
@@ -1832,6 +1830,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       params: taskParams,
       apiProvider: activeProfile.provider,
       apiProfileId: activeProfile.id,
+      apiConfigScope: requestScope,
       apiProfileName: activeProfile.name,
       apiMode: activeProfile.apiMode,
       apiModel: activeProfile.model,
@@ -2484,7 +2483,7 @@ export async function submitAgentMessage() {
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
     showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
-    state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
+    state.setShowSettings(true, 'agent')
     return
   }
 
@@ -2639,7 +2638,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   const agentValidationError = getAgentProfileValidationError(normalizedSettings)
   if (agentValidationError) {
     showToast(`请先完善 Agent API 配置：${agentValidationError.message}`, 'error')
-    state.setShowSettings(true, normalizedSettings.agentApiConfigMode === 'off' ? 'api' : 'agent')
+    state.setShowSettings(true, 'agent')
     return
   }
 
@@ -2838,6 +2837,7 @@ async function executeAgentRound(
         params: options.taskParams ?? { ...imageParams, n: 1 },
         apiProvider: imageProfile.provider,
         apiProfileId: imageProfile.id,
+        apiConfigScope: 'agent',
         apiProfileName: imageProfile.name,
         apiMode: imageProfile.apiMode,
         apiModel: imageProfile.model,
@@ -3420,6 +3420,7 @@ async function executeAgentRound(
           params: imageParams,
           apiProvider: imageProfile.provider,
           apiProfileId: imageProfile.id,
+          apiConfigScope: 'agent',
           apiProfileName: imageProfile.name,
           apiMode: imageProfile.apiMode,
           apiModel: imageProfile.model,
@@ -4028,18 +4029,22 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 按重试方式创建或覆盖任务；先校验当前供应商能力，拒绝不支持的历史遮罩或参考图。 */
+/** 使用任务所属工作区的原配置重试；原配置缺失时提示设置，不回退其他配置。 */
 export async function retryTask(task: TaskRecord) {
   const { settings, tasks } = useStore.getState()
   const source = tasks.find((item) => item.id === task.id)
   if (!source || source.status === 'running' || source.falRecoverable || source.customRecoverable) return
-  const activeProfile = getActiveApiProfile(settings)
+  const activeProfile = source.apiProfileId ? getTaskApiProfile(settings, source) : getActiveApiProfile(settings)
+  if (!activeProfile) {
+    useStore.getState().showToast('原任务的配置已不存在，请先重新选择配置并复用参数生成。', 'error')
+    return
+  }
   const grokInputError = getGrokImageInputError(activeProfile, source.inputImageIds.length, Boolean(source.maskImageId))
   if (grokInputError) {
     useStore.getState().showToast(grokInputError, 'error')
     return
   }
-  const normalizedParams = normalizeParamsForSettings(source.params, settings, { hasInputImages: source.inputImageIds.length > 0 })
+  const normalizedParams = normalizeParamsForSettings(source.params, createSettingsForApiProfile(settings, activeProfile), { hasInputImages: source.inputImageIds.length > 0 })
   const shouldUseTransparentOutput = (normalizedParams.output_format === 'png' || normalizedParams.output_format === 'webp') && normalizedParams.transparent_output
   const taskParams = shouldUseTransparentOutput
     ? getTransparentRequestParams(normalizedParams)
@@ -4059,6 +4064,7 @@ export async function retryTask(task: TaskRecord) {
     params: taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
+    apiConfigScope: source.apiProfileId ? getTaskApiConfigScope(source) : 'gallery',
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
     apiModel: activeProfile.model,
@@ -4120,7 +4126,8 @@ export async function reuseConfig(task: TaskRecord) {
   const currentProfile = getActiveApiProfile(settings)
   const taskProfile = normalizedSettings.reuseTaskApiProfileTemporarily ? getTaskApiProfile(normalizedSettings, task) : null
   const matchedProfile = taskProfile && (!IS_SITE_MODE || isSiteApiProfile(taskProfile)) && (!isPresetConfigOnlyEnabled() || isPresetProfile(taskProfile.id)) ? taskProfile : null
-  const shouldTemporarilyReuseProfile = Boolean(matchedProfile && matchedProfile.id !== currentProfile.id)
+  const scope = getTaskApiConfigScope(task)
+  const shouldTemporarilyReuseProfile = Boolean(matchedProfile && (scope === 'agent' || matchedProfile.id !== currentProfile.id))
   const missingReusedProfile = normalizedSettings.reuseTaskApiProfileTemporarily && !matchedProfile
   const taskProfileName = matchedProfile?.name ?? getTaskApiProfileName(task)
   // 复用当前配置时，任务所用模型仍在模型列表中则同步切换首页选中的模型；临时复用其他配置时模型只随复用状态生效
@@ -4139,6 +4146,7 @@ export async function reuseConfig(task: TaskRecord) {
     missingReusedProfile,
     taskProfileName,
     shouldTemporarilyReuseProfile && matchedProfile ? matchedProfile.model : null,
+    scope,
   )
   clearMaskDraft()
 
@@ -4460,9 +4468,9 @@ export interface ClearOptions {
   clearTasks?: boolean
 }
 
-/** 清空数据 */
+/** 按用户所选范围清空本地数据；清空配置时同时恢复两套工作区的默认参数。 */
 export async function clearData(options: ClearOptions = { clearConfig: true, clearTasks: true }) {
-  const { setTasks, clearInputImages, clearMaskDraft, setSettings, setParams, showToast } = useStore.getState()
+  const { setTasks, clearInputImages, clearMaskDraft, setSettings, showToast } = useStore.getState()
   // 清空后剩余的批量提示词已没有对应的任务、配置或图片，直接结束批量
   if (useStore.getState().batchProgress) endBatch(activeBatchId)
 
@@ -4496,7 +4504,7 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
     } else {
       setSettings({ ...DEFAULT_SETTINGS })
     }
-    setParams({ ...DEFAULT_PARAMS })
+    useStore.setState({ params: { ...DEFAULT_PARAMS }, galleryParams: { ...DEFAULT_PARAMS }, agentParams: { ...DEFAULT_PARAMS } })
   }
 
   showToast('所选数据已清空', 'success')
@@ -4719,17 +4727,21 @@ export async function importData(input: File | File[], options: ImportOptions = 
     if (options.importConfig && !options.importTasks && !settingsManifests.length) throw new Error('这份备份里没有配置。')
     // 在写入任务前确定配置 ID；普通备份各自映射，分卷共享配置所在卷的映射。
     const profileIdMaps = new Map<typeof selected[number], Map<string, string>>()
+    const agentProfileIdMaps = new Map<typeof selected[number], Map<string, string>>()
     const importedSettings = options.importConfig ? settingsManifests.reduce((current, part) => {
       const profileIdMap = new Map<string, string>()
       profileIdMaps.set(part, profileIdMap)
-      return mergeImportedSettings(current, part.manifest.settings, { preserveInternalIds: true, profileIdMap })
+      const agentProfileIdMap = new Map<string, string>()
+      agentProfileIdMaps.set(part, agentProfileIdMap)
+      return mergeImportedSettings(current, part.manifest.settings, { preserveInternalIds: true, profileIdMap, agentProfileIdMap })
     }, useStore.getState().settings) : null
     const importedTasks = selected.flatMap((part) => {
       const source = part.manifest.settings ? part : multipart ? settingsManifests[0] : undefined
       const settings = source ? normalizeSettings(source.manifest.settings) : useStore.getState().settings
-      const profileIdMap = source ? profileIdMaps.get(source) : undefined
       return (part.manifest.tasks ?? []).map((task) => {
         const migrated = migrateLegacyGrokTask(task, settings)
+        const agent = getTaskApiConfigScope(task) === 'agent'
+        const profileIdMap = source ? (agent ? agentProfileIdMaps : profileIdMaps).get(source) : undefined
         const id = migrated.apiProfileId ? profileIdMap?.get(migrated.apiProfileId) : undefined
         return id ? { ...migrated, apiProfileId: id } : migrated
       })

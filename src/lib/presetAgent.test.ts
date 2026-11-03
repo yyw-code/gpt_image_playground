@@ -51,7 +51,7 @@ describe('Agent deployment settings', () => {
     expect(initial.settings).toMatchObject({ agentApiConfigMode: 'hybrid', agentTextProfileId: 'text', agentImageProfileId: 'image' })
     const local = { ...initial.settings, agentApiConfigMode: 'off' as const, agentTextProfileId: 'other' }
     const repeated = mergePresetImportedSettings(local, config, { previousPresetConfig: initial.presetConfig })
-    expect(repeated.settings).toMatchObject({ agentApiConfigMode: 'off', agentTextProfileId: 'other' })
+    expect(repeated.settings).toMatchObject({ agentApiConfigMode: 'native', agentTextProfileId: 'other' })
     expect(repeated.presetConfig.agent).toEqual(config.agent)
     const locked = mergePresetImportedSettings(local, config, { previousPresetConfig: initial.presetConfig, lockPresetParams: true })
     expect(locked.settings).toMatchObject({ agentApiConfigMode: 'hybrid', agentTextProfileId: 'text' })
@@ -70,7 +70,7 @@ describe('Agent deployment settings', () => {
     const local = normalizeSettings({ ...legacy, agentApiConfigMode: 'native', agentTextProfileId: 'other' })
     expect(mergePresetImportedSettings(local, legacy).settings).toEqual(local)
     const merged = mergePresetImportedSettings(local, { ...legacy, agent: { apiConfigMode: 'off' } }, { previousPresetConfig: legacy })
-    expect(merged.settings.agentApiConfigMode).toBe('off')
+    expect(merged.settings.agentApiConfigMode).toBe('native')
     expect(merged.settings.agentTextProfileId).toBe('other')
     expect(merged.presetConfig.agent).toEqual({ apiConfigMode: 'off' })
   })
@@ -107,7 +107,8 @@ describe('Agent deployment settings', () => {
 
     useStore.getState().setSettings({ profiles: [image, other] })
     expect(useStore.getState().settings.profiles.map((profile) => profile.id)).toEqual(['image', 'other'])
-    expect(useStore.getState().settings.agentTextProfileId).toBe('other')
+    expect(useStore.getState().settings.agentTextProfileId).toBe('text')
+    expect(useStore.getState().settings.agentProfiles.some((profile) => profile.id === 'text')).toBe(true)
     expect(policy.getPresetConfig()?.agent).toEqual(config.agent)
     policy.setPresetConfig(null)
     expect(policy.isPresetAgentFieldLocked('apiConfigMode')).toBe(false)
@@ -121,7 +122,8 @@ describe('Agent deployment settings', () => {
       dismissedPresetProfileIds: ['text'],
     })
     expect(merged.settings.profiles.some((profile) => profile.id === 'text')).toBe(false)
-    expect(merged.settings.agentTextProfileId).toBe('other')
+    expect(merged.settings.agentTextProfileId).toBe('text')
+    expect(merged.settings.agentProfiles.some((profile) => profile.id === 'text')).toBe(true)
     expect(merged.presetConfig.agent).toEqual(config.agent)
   })
 })

@@ -159,7 +159,7 @@ function enforceSiteConfigPolicy(settings: AppSettings, options: { restoreSitePr
 }
 
 /** 应用部署策略；本站仅限制连接归属，普通模式沿用原有预置参数锁定规则。 */
-export function enforcePresetConfigPolicy(
+function enforceImageConfigPolicy(
   settings: AppSettings,
   options: { dismissedPresetProviderIds?: string[]; dismissedPresetProfileIds?: string[]; restoreSitePresets?: boolean } = {},
 ): AppSettings {
@@ -220,4 +220,26 @@ export function enforcePresetConfigPolicy(
     agentTextProfileId: agentSettings && presetAgent?.textProfileId !== undefined ? agentSettings.agentTextProfileId : agentTextProfileId,
     agentImageProfileId: agentSettings && presetAgent?.imageProfileId !== undefined ? agentSettings.agentImageProfileId : agentImageProfileId,
   }
+}
+
+/** 对图片和 Agent 各自应用相同部署限制，保留各自密钥；失效引用不会借用另一套配置。 */
+export function enforcePresetConfigPolicy(
+  settings: AppSettings,
+  options: Parameters<typeof enforceImageConfigPolicy>[1] = {},
+): AppSettings {
+  const image = enforceImageConfigPolicy(settings, options)
+  const agent = enforceImageConfigPolicy({
+    ...settings,
+    profiles: settings.agentProfiles,
+    activeProfileId: settings.agentTextProfileId ?? '',
+  }, { ...options, dismissedPresetProfileIds: [] })
+  const textId = isPresetAgentFieldLocked('textProfileId') ? agent.agentTextProfileId : settings.agentTextProfileId
+  const imageId = isPresetAgentFieldLocked('imageProfileId') ? agent.agentImageProfileId : settings.agentImageProfileId
+  const next = normalizeSettings({
+    ...image,
+    agentProfiles: settings.agentProfiles.length || presetAgent || isPresetConfigOnlyEnabled() ? agent.profiles : [],
+    agentTextProfileId: textId,
+    agentImageProfileId: imageId,
+  })
+  return { ...image, agentProfiles: next.agentProfiles, agentApiConfigMode: next.agentApiConfigMode, agentTextProfileId: next.agentTextProfileId, agentImageProfileId: next.agentImageProfileId }
 }

@@ -476,6 +476,7 @@ describe('task retry', () => {
       settings: {
         ...useStore.getState().settings,
         profiles: useStore.getState().settings.profiles.map((profile) => ({ ...profile, apiMode: 'responses', codexCli: false, transparentBackgroundMethod: 'local' })),
+        agentProfiles: useStore.getState().settings.agentProfiles.map((profile) => ({ ...profile, apiMode: 'responses', codexCli: false, transparentBackgroundMethod: 'local' })),
       },
       appMode: 'gallery',
       prompt: 'prompt',
@@ -628,6 +629,7 @@ describe('mask draft lifecycle in store actions', () => {
           submit: { path: 'images/generations' },
         }],
         profiles: [profile],
+        agentProfiles: undefined,
         activeProfileId: profile.id,
       }),
       params: { ...DEFAULT_PARAMS, n: 2 },
@@ -878,6 +880,7 @@ describe('mask draft lifecycle in store actions', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [{ ...falProfile, transparentBackgroundMethod: 'local' }],
+        agentProfiles: undefined,
         activeProfileId: falProfile.id,
       }),
       prompt: '单主体图标素材',
@@ -1074,6 +1077,7 @@ describe('preset deletion state', () => {
         ...DEFAULT_SETTINGS,
         customProviders: [],
         profiles: [createDefaultFalProfile({ id: 'user-profile' })],
+        agentProfiles: undefined,
         activeProfileId: 'user-profile',
       }),
       dismissedPresetProfileIds: [profile.id],
@@ -1100,6 +1104,7 @@ describe('preset deletion state', () => {
         ...DEFAULT_SETTINGS,
         customProviders: [],
         profiles: [{ ...profile, provider: 'openai' }],
+        agentProfiles: undefined,
       }),
       dismissedPresetProviderIds: [provider.id],
     })
@@ -1382,6 +1387,7 @@ describe('fal task recovery', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [falProfile],
+        agentProfiles: undefined,
         activeProfileId: falProfile.id,
       }),
       tasks: [],
@@ -1572,6 +1578,7 @@ describe('fal task recovery', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [textProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: textProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: textProfile.id,
@@ -1661,6 +1668,7 @@ describe('fal task recovery', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [textProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: textProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: textProfile.id,
@@ -1746,6 +1754,7 @@ describe('fal task recovery', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [textProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: textProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: textProfile.id,
@@ -1825,6 +1834,7 @@ describe('fal task recovery', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [textProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: textProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: textProfile.id,
@@ -2930,6 +2940,7 @@ describe('data import', () => {
     await useStore.getState().setPresetImportedSettings({
       customProviders: [{ id: provider.id, name: 'Backup Provider', submit: { path: 'v2/generate' } }],
       profiles: [{ ...profile, provider: provider.id, model: 'model-v2' }],
+      agentProfiles: undefined,
     })
 
     const settings = useStore.getState().settings
@@ -2948,6 +2959,7 @@ describe('data import', () => {
         ...DEFAULT_SETTINGS,
         customProviders: [],
         profiles: [{ ...profile, provider: 'openai' }],
+        agentProfiles: undefined,
       }),
       dismissedPresetProviderIds: [provider.id],
       dismissedPresetProfileIds: [profile.id, 'other-preset-profile'],
@@ -2961,6 +2973,7 @@ describe('data import', () => {
           ...DEFAULT_SETTINGS,
           customProviders: [provider],
           profiles: [profile],
+          agentProfiles: undefined,
           activeProfileId: profile.id,
         }),
       }), { importConfig: true, importTasks: false })
@@ -3075,6 +3088,7 @@ describe('agent draft lifecycle', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [responsesProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
       }),
       appMode: 'agent',
@@ -3260,6 +3274,7 @@ describe('agent context for removed outputs', () => {
         apiMode: 'responses',
         model: DEFAULT_RESPONSES_MODEL,
         profiles: [profile],
+        agentProfiles: undefined,
         activeProfileId: profile.id,
       }),
       prompt: '继续',
@@ -4054,6 +4069,7 @@ describe('task deletion', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [customProfile],
+        agentProfiles: undefined,
         activeProfileId: customProfile.id,
         customProviders: [{
           id: 'custom-async',
@@ -4411,6 +4427,7 @@ describe('agent built-in image tool failure', () => {
         model: DEFAULT_RESPONSES_MODEL,
         streamImages: true,
         profiles: [responsesProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
       }),
       prompt: '画一张图',
@@ -4444,6 +4461,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [responsesProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -4479,6 +4497,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [textProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: textProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: textProfile.id,
@@ -4509,6 +4528,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [responsesProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -4557,6 +4577,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [responsesProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -4622,6 +4643,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [responsesProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -4693,6 +4715,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [responsesProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -4804,6 +4827,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [responsesProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -5078,6 +5102,7 @@ describe('agent built-in image tool failure', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [responsesProfile, falProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: responsesProfile.id,
@@ -5142,6 +5167,7 @@ describe('agent batch reference resolution', () => {
         apiMode: 'responses',
         model: DEFAULT_RESPONSES_MODEL,
         profiles: [responsesProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
       }),
       prompt: '继续生成',
@@ -5303,6 +5329,7 @@ describe('agent assistant regeneration', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [responsesProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         alwaysShowRetryButton: false,
       }),
@@ -5431,6 +5458,7 @@ describe('reused task API profile', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [openaiProfile, falProfile],
+        agentProfiles: undefined,
         activeProfileId: openaiProfile.id,
         reuseTaskApiProfileTemporarily: true,
       }),
@@ -5474,6 +5502,7 @@ describe('reused task API profile', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [profile, openaiProfile],
+        agentProfiles: undefined,
         customProviders: [provider],
         activeProfileId: openaiProfile.id,
       }),
@@ -5484,6 +5513,7 @@ describe('reused task API profile', () => {
     await useStore.getState().setPresetImportedSettings({
       customProviders: [{ id: provider.id, name: provider.name, submit: { path: 'v2/generate' } }],
       profiles: [{ ...profile, provider: provider.id, model: 'model-v2' }],
+      agentProfiles: undefined,
     })
 
     const state = useStore.getState()
@@ -5512,6 +5542,7 @@ describe('reused task API profile', () => {
     await useStore.getState().setPresetImportedSettings({
       customProviders: [{ id: 'provider-new', name: 'New Provider', submit: { path: 'new' } }],
       profiles: [{ ...profile, provider: 'provider-new', model: 'model-new' }],
+      agentProfiles: undefined,
     })
 
     expect(getTaskApiProfile(useStore.getState().settings, sourceTask)).toMatchObject({
@@ -5626,6 +5657,7 @@ describe('task failure notification', () => {
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
         profiles: [responsesProfile],
+        agentProfiles: undefined,
         activeProfileId: responsesProfile.id,
         taskCompletionNotification: true,
       }),
@@ -5743,6 +5775,7 @@ describe('task failure notification', () => {
       settings: normalizeSettings({
         ...useStore.getState().settings,
         profiles: [textProfile, imageProfile],
+        agentProfiles: undefined,
         activeProfileId: textProfile.id,
         agentApiConfigMode: 'hybrid',
         agentTextProfileId: textProfile.id,
@@ -6080,6 +6113,7 @@ describe('Grok task lifecycle', () => {
     const legacy = normalizeSettings({
       customProviders: [{ id: 'grok', name: 'Legacy', submit: { path: 'legacy/image' } }],
       profiles: [{ ...grokProfile, id: 'other-profile' }],
+      agentProfiles: undefined,
     })
     expect(migrateLegacyGrokTask(original, legacy)).toBe(original)
   })
@@ -6089,6 +6123,7 @@ describe('Grok task lifecycle', () => {
       ...useStore.getState().settings,
       customProviders: [{ id: 'grok', name: 'Legacy Grok', submit: { path: 'custom/image', body: { prompt: '$prompt', legacy: true } } }],
       profiles: [{ ...useStore.getState().settings.profiles[0], id: 'legacy-profile', model: 'legacy-model' }],
+      agentProfiles: undefined,
       activeProfileId: 'legacy-profile',
     }
     const original = task({ apiProvider: 'grok', apiProfileId: 'legacy-profile', apiModel: 'legacy-model' })
@@ -6125,5 +6160,79 @@ describe('Grok task lifecycle', () => {
     await retryTask(original)
     expect(useStore.getState().tasks).toEqual([original])
     expect(callImageApi).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('工作区配置与参数隔离', () => {
+  const image = createDefaultOpenAIProfile({ id: 'shared-id', apiKey: 'fixture-gallery', model: 'image-a, image-b' })
+  const text = createDefaultOpenAIProfile({ id: 'shared-id', apiKey: 'fixture-agent', apiMode: 'responses', model: 'text-a, text-b' })
+
+  beforeEach(async () => {
+    setPresetConfig(null)
+    await clearTasks()
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    useStore.setState({ settings: normalizeSettings({ profiles: [image], agentProfiles: [text], agentTextProfileId: text.id }), appMode: 'gallery', params: { ...DEFAULT_PARAMS }, galleryParams: { ...DEFAULT_PARAMS }, agentParams: { ...DEFAULT_PARAMS, quality: 'high' }, agentConversations: [], activeAgentConversationId: null, galleryInputDraft: null, agentInputDrafts: {}, tasks: [], reusedTaskApiProfileId: null, reusedTaskApiProfileScope: 'gallery', reusedTaskApiProfileMissing: false, showToast: vi.fn() })
+  })
+
+  it('切换工作区分别恢复尺寸和质量，默认打开各自的配置页', () => {
+    useStore.getState().setParams({ size: '1536x1024', quality: 'low' })
+    useStore.getState().setAppMode('agent')
+    expect(useStore.getState().appMode).toBe('agent')
+    expect(useStore.getState().params).toMatchObject({ size: 'auto', quality: 'high' })
+    useStore.getState().setParams({ size: '1024x1536' })
+    useStore.getState().setShowSettings(true)
+    expect(useStore.getState().settingsTabRequest).toBe('agent')
+    useStore.getState().setAppMode('gallery')
+    expect(useStore.getState().params).toMatchObject({ size: '1536x1024', quality: 'low' })
+    useStore.getState().setShowSettings(true)
+    expect(useStore.getState().settingsTabRequest).toBe('api')
+    useStore.getState().setAppMode('agent')
+    expect(useStore.getState().params).toMatchObject({ size: '1024x1536', quality: 'high' })
+  })
+
+  it('同 ID 的历史任务从原工作区读取配置，失效时不回退另一套密钥', () => {
+    const settings = useStore.getState().settings
+    expect(getTaskApiProfile(settings, task({ apiProfileId: image.id }))?.apiKey).toBe('fixture-gallery')
+    expect(getTaskApiProfile(settings, task({ apiProfileId: text.id, agentConversationId: 'conversation-a' }))?.apiKey).toBe('fixture-agent')
+    expect(getTaskApiProfile({ ...settings, agentProfiles: [] }, task({ apiProfileId: text.id, apiConfigScope: 'agent' }))).toBeNull()
+  })
+
+  it('修改图片模型选择和密钥不改 Agent；从 Agent 重试仍使用原配置', async () => {
+    const settings = useStore.getState().settings
+    useStore.getState().setSettings({ profiles: [{ ...image, apiKey: 'fixture-gallery-updated', selectedModel: 'image-b' }] })
+    expect(useStore.getState().settings.agentProfiles).toEqual(settings.agentProfiles)
+    const source = task({ id: 'independent-retry', apiProfileId: text.id, apiConfigScope: 'agent', apiModel: 'text-b' })
+    useStore.setState({ tasks: [source] })
+    await retryTask(source)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ apiKey: 'fixture-agent', model: 'text-b' }) }))
+    expect(useStore.getState().settings.profiles[0].apiKey).toBe('fixture-gallery-updated')
+  })
+
+  it('原任务配置缺失时不创建重试任务，也不发出请求', async () => {
+    const source = task({ id: 'missing-profile', apiProfileId: 'missing', apiConfigScope: 'agent' })
+    useStore.setState({ tasks: [source] })
+    await retryTask(source)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([source])
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('原任务的配置已不存在'), 'error')
+  })
+
+  it('批量生成在清除临时复用状态后，仍按提交时的 Agent 配置归属请求', async () => {
+    useStore.setState({
+      settings: { ...useStore.getState().settings, reuseTaskApiProfileTemporarily: true, showBatchPrompt: true, batchPromptEnabled: true, batchPromptMode: 'queue' },
+      prompt: '第一张图片\n\n\n第二张图片',
+      inputImages: [], maskDraft: null, batchProgress: null,
+    })
+    useStore.getState().setReusedTaskApiProfile(text.id, false, text.name, 'text-b', 'agent')
+    await submitTask()
+    expect(callImageApi).toHaveBeenCalledTimes(2)
+    for (const [request] of vi.mocked(callImageApi).mock.calls) {
+      expect(request.settings.apiKey).toBe('fixture-agent')
+      expect(request.settings.model).toBe('text-b')
+    }
+    expect(useStore.getState().tasks.every((item) => item.apiConfigScope === 'agent')).toBe(true)
+    expect(useStore.getState().reusedTaskApiProfileId).toBeNull()
   })
 })

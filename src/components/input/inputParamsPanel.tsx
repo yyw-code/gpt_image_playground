@@ -101,6 +101,8 @@ export default function InputParamsPanel({
   activeProfile,
   modelOptions,
   onModelChange,
+  modelLabel = '模型',
+  textModelControl,
   isFalProvider,
   isFalTextToImage,
   displaySize,
@@ -151,6 +153,8 @@ export default function InputParamsPanel({
   activeProfile: ApiProfile
   modelOptions: Array<{ label: string; value: string }>
   onModelChange: (model: string) => void
+  modelLabel?: string
+  textModelControl?: import('react').ReactNode
   isFalProvider: boolean
   isFalTextToImage: boolean
   displaySize: string
@@ -213,10 +217,12 @@ export default function InputParamsPanel({
 
   return (
     <div className="flex flex-1 flex-wrap sm:flex-nowrap items-center gap-2 min-w-0 text-xs">
+      {textModelControl}
       {/* 极小的收缩权重：先截断“更多”的摘要，放不下时才压缩模型 ID */}
       <div className="min-w-0 max-w-full sm:shrink-[0.01] max-sm:flex-auto">
         <Select
           value={activeProfile.model}
+          prefix={prefix(modelLabel)}
           onChange={(val) => onModelChange(String(val))}
           options={modelOptions}
           showValueTooltips
@@ -224,6 +230,7 @@ export default function InputParamsPanel({
           className={CHIP_CLASS}
         />
       </div>
+      {activeProfile.apiMode === 'responses' && <span className="shrink-0 text-gray-500" title="由文本模型调用的图像生成工具模型">图片：{activeProfile.imageGenerationModel || '接口默认'}</span>}
       {isGrok ? (
         <>
           <Select

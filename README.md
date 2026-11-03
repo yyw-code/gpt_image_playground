@@ -33,12 +33,13 @@
 
 - 通过已有的 `VITE_DEFAULT_API_URL` 提供站点预置配置；Docker 使用已有的 `DEFAULT_API_URL`。配置格式见下方“预置配置”，不要在公开配置中填写真实密钥。
 - 本站连接取自默认的 OpenAI 兼容预置（没有默认项时取首个 OpenAI 兼容预置），API 地址始终可见且由部署端维护。支持创建、复制、重命名、排序、切换及删除多套本站配置，分别保存个人 Key、模型及 Images/Responses 接口类型。显式配置的预置参数锁定、禁止删除及仅限预置选项仍然生效。
-- Agent 复用保存的配置；文本模型须使用 Responses API，混合模式可另选图像配置。API 页维护密钥和模型，Agent 页提供管理入口与配置要求说明。
+- 图片生成和 Agent 分别保存配置、个人 Key、模型选择及生成参数。在“图片生成”页维护画廊配置，在“Agent 配置”页直接维护对话和图片配置。支持从图片配置复制到 Agent，复制后各自修改，不再联动；旧版共享配置首次恢复时会迁移为独立副本。
+- 设置使用独立整页布局，顶部可返回工作台。图片和 Agent 配置均以列表展示，新增、复制和编辑时打开弹窗；点击“使用”才切换当前使用项。新建和复制的配置不会自动启用，高级选项默认收起。
 - 支持备份配置导入；外站旧配置仍保留在本地和导出备份中，但不可在本站选用或用于历史重试/Agent 请求。不会按相同 ID 把旧地址的 Key 迁移到本站；部署地址变更时需重新填写 Key。
 - 尚未配置有效本站接口时，显示管理员配置错误并阻止请求，不回退其他供应商接口。代理目标仍须由部署端正确配置为本站地址。
 - 当前仍需手动填写个人 Key，历史仍保存在当前浏览器。主站登录复用、自动读取个人 Key、账号历史隔离及视频页面尚未接入。
-- API 配置页支持使用当前个人 Key 获取 `/v1/models` 模型候选，搜索选择或手动填写。模型 ID 可多选，图像生成模型可选择“使用接口默认值”；查询失败不覆盖已有值。切换配置、地址、Key 或代理设置后需重新获取，候选不持久化，也不代表接口或工具能力保证。Docker 同源代理支持模型查询的 GET 请求。
-- 构建或开发环境设置 `VITE_SITE_MODE=false` 可恢复上游网页入口；Docker 容器使用 `SITE_MODE=false`。客户端始终沿用原有行为。开关变更后需要重新加载页面。
+- 图片生成和 Agent 配置页均支持使用当前个人 Key 获取 `/v1/models` 模型候选，搜索选择或手动填写。模型 ID 可多选，图像生成模型可选择“使用接口默认值”；查询失败不覆盖已有值。切换配置、地址、Key 或代理设置后需重新获取，候选不持久化，也不代表接口或工具能力保证。Docker 同源代理支持模型查询的 GET 请求。
+- 构建或开发环境设置 `VITE_SITE_MODE=false` 可恢复上游网页入口；Docker 容器使用 `SITE_MODE=false`。客户端不启用站点入口精简；图片与 Agent 配置隔离在网页和客户端均生效。开关变更后需要重新加载页面。
 - 站点模式是产品入口与配置策略，不代替 Sub2API 服务端鉴权、模型权限或额度校验。
 
 ---
@@ -164,10 +165,10 @@
 - **性能与隐私**：记录和图片只保存在本地（网页版为 IndexedDB，客户端为本机数据目录），SHA-256 去重压缩，不经过第三方服务器；可打包导出 ZIP 备份。
 
 ### 🔌 多配置与供应商增强
-- **多配置管理**：保存多个 API 配置（供应商、API Key、模型等）并快速切换；可一键复制当前配置到列表底部，配置和供应商列表均可拖拽排序。
+- **多配置管理**：分别保存图片和 Agent 配置（供应商、API Key、模型等）；图片配置的编辑与启用分开，新建或复制后不会自动切换当前请求配置。
 - **多模型切换**：模型 ID 可用逗号分隔填写多个（如 `gpt-image-2.5-sunburst, gpt-image-2`），在首页切换，按配置分别记住；预置配置、URL 传参与导入导出均支持此写法。
 - **多供应商接入**：内置 OpenAI 兼容接口（`Images API` / `Responses API`）、sub2api（异步）、fal.ai（队列），并可通过 JSON 导入自定义 HTTP 供应商（同步/异步任务）。
-- **Agent 模式独立 API 配置**：Agent 可使用原生（Responses API）或混合（Responses API + Images API）的独立配置，适配不支持 `image_generation` 工具的供应商或模型。
+- **Agent 独立配置**：直接在 Agent 设置页管理对话和生图的密钥、模型，选择内置生图工具（Responses API）或独立图片接口；与画廊各自记住模型、尺寸、质量等参数。
 - **API 代理**：OpenAI 兼容接口与 fal.ai 均可配置自定义代理；OpenAI 兼容接口还可走同源 `/api-proxy/`，由 Docker 或本地开发服务器转发，绕开浏览器 CORS 限制。
 - **Codex CLI 兼容模式**：上游为 Codex CLI 时，按其实际支持的参数发送请求，并把多图生成拆成并发单图。
 - **提示词防改写**：Responses API 始终在请求前加入防改写指令；开启 Codex CLI 模式后，Images API 也会加入。
@@ -590,9 +591,9 @@ VITE_DEFAULT_API_URL=https://你的域名?settings=%7B%22profiles%22%3A%5B...%5D
 
 ### 示例：预置 Agent 配置
 
-`agent.apiConfigMode` 决定 Agent 是否使用独立的 API 配置：
+Agent 始终使用自己的配置池，`agent.apiConfigMode` 决定生图方式。部署预置分别合并到图片和 Agent 配置，各自保留用户填写的密钥：
 
-- **`off`**：沿用当前 API 配置。
+- **`off`**：仅兼容旧配置，恢复时迁移为 `native` 及独立配置副本，不再跟随画廊配置。
 - **`native`**：文本模型通过 Responses API 调用 `image_generation` 工具生成图片。
 - **`hybrid`**：文本模型调用自定义工具，再由图像模型生成图片，适用于文本模型不支持原生图像工具的情况。
 
@@ -654,7 +655,7 @@ API 不是标准 OpenAI 格式时，在预置 JSON 的 `customProviders` 中定�
 
 **获取供应商定义**
 
-- **AI 生成**：在 [Vercel 在线体验](https://gpt-image-playground.cooksleep.dev) 或 [GitHub Pages 在线体验](https://cooksleep.github.io/gpt_image_playground) 的 **设置 → API 配置 → 供应商类型 → 创建自定义供应商 → AI 一键生成与导入** 中粘贴第三方 API 文档生成配置，再复制该配置的导入链接作为预置值。
+- **AI 生成**：在 [Vercel 在线体验](https://gpt-image-playground.cooksleep.dev) 或 [GitHub Pages 在线体验](https://cooksleep.github.io/gpt_image_playground) 的 **设置 → 图片生成 → 供应商类型 → 创建自定义供应商 → AI 一键生成与导入** 中粘贴第三方 API 文档生成配置，再复制该配置的导入链接作为预置值。
 - **手动生成**：将 [自定义供应商 LLM 提示词](docs/custom-provider-llm-prompt.md) 和第三方 API 文档发给任意 LLM，获取完整 JSON。
 
 **完整 JSON 示例（异步任务供应商）**

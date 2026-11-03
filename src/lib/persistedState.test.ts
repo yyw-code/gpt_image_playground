@@ -58,6 +58,17 @@ function fallback() {
 }
 
 describe('persisted state codec', () => {
+  it('两套生成参数分别保存和恢复，旧版共享参数仅复制一次', () => {
+    const saved = createPersistedState({ ...source(), appMode: 'agent', params: { ...DEFAULT_PARAMS, size: '1024x1536' }, galleryParams: { ...DEFAULT_PARAMS, size: '1536x1024' }, agentParams: DEFAULT_PARAMS })
+    const restored = normalizePersistedState(JSON.parse(JSON.stringify(saved)), fallback())!.state
+    expect(restored.params.size).toBe('1024x1536')
+    expect(restored.galleryParams?.size).toBe('1536x1024')
+    expect(restored.agentParams?.size).toBe('1024x1536')
+    const legacy = normalizePersistedState({ params: { ...DEFAULT_PARAMS, size: '1024x1024' } }, fallback())!.state
+    expect(legacy.galleryParams?.size).toBe('1024x1024')
+    expect(legacy.agentParams?.size).toBe('1024x1024')
+    expect(legacy.galleryParams).not.toBe(legacy.agentParams)
+  })
   it('restores Grok geometry without losing legacy GPT parameters', () => {
     const restored = normalizePersistedState({ params: { ...DEFAULT_PARAMS, resolution: '2k', aspect_ratio: '9:16' } }, fallback(), 1)!.state.params
     expect(restored).toMatchObject({ ...DEFAULT_PARAMS, resolution: '2k', aspect_ratio: '9:16' })

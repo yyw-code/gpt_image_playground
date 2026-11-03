@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ApiProfile } from '../../types'
 import { DEFAULT_FAL_MODEL, DEFAULT_IMAGES_MODEL, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS } from '../../lib/apiProfiles'
 import { fetchApiModels } from '../../lib/apiModels'
@@ -9,12 +9,15 @@ interface ApiModelFieldsProps {
   profile: ApiProfile
   locked: boolean
   customProviderName?: string
+  purpose?: 'text' | 'image'
+  showImageTool?: boolean
   onChange: (patch: Partial<ApiProfile>) => void
   onCommit: (patch: Partial<ApiProfile>) => void
 }
 
-/** 管理当前配置的模型候选和手动输入；连接变化立即隔离旧结果，取消查询不影响已存模型。 */
-export default function ApiModelFields({ profile, locked, customProviderName, onChange, onCommit }: ApiModelFieldsProps) {
+/** 以紧凑文字入口展示模型获取及禁用原因；连接变化隔离旧结果，查询不修改已存模型。 */
+export default function ApiModelFields({ profile, locked, customProviderName, purpose, showImageTool = true, onChange, onCommit }: ApiModelFieldsProps) {
+  const modelStatusId = useId()
   // 用连接身份隔离异步结果；不把 Key 拼成 DOM 标识或写入候选缓存。
   const connection = useMemo(() => ({}), [profile.id, profile.provider, profile.baseUrl, profile.apiKey, profile.apiProxy])
   const request = useRef<AbortController | null>(null)
@@ -49,13 +52,16 @@ export default function ApiModelFields({ profile, locked, customProviderName, on
           <button
             type="button"
             onClick={() => void refreshModels()}
+            aria-describedby={modelStatusId}
             disabled={locked || !profile.apiKey.trim() || current?.status === 'loading'}
-            className="text-xs text-blue-600 hover:underline disabled:text-gray-400 disabled:no-underline dark:text-blue-400"
+            className="text-xs font-medium text-blue-600 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500 disabled:cursor-not-allowed disabled:no-underline dark:text-blue-400"
           >
             {current?.status === 'loading' ? '正在获取模型…' : current ? '刷新模型' : '获取模型'}
           </button>
-          <div role="status" className="mt-1 text-xs text-gray-500 dark:text-gray-500">
-            {!profile.apiKey.trim() ? '填写个人 API Key 后可获取模型，也可直接手动输入。'
+          <div id={modelStatusId} role="status" className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+            {locked ? '当前配置已锁定，无法获取或更改模型。'
+              : !profile.apiKey.trim() ? '请先填写上方个人 API Key，填写后即可点击“获取模型”。也可直接手动输入模型 ID。'
+              : current?.status === 'loading' ? '正在查询当前配置的模型列表，请稍候。'
               : current?.status === 'error' ? current.error
               : current?.status === 'ready' ? models.length ? `已获取 ${models.length} 个模型。` : '接口未返回模型，可手动填写。'
               : '使用当前配置的个人 API Key 获取模型。'}
@@ -67,7 +73,7 @@ export default function ApiModelFields({ profile, locked, customProviderName, on
         {openai ? (
           <ModelPicker
             key={`model-${profile.id}`}
-            label="模型 ID"
+            label={mode === 'responses' || purpose === 'text' ? '文本模型 ID' : '图片模型 ID'}
             value={profile.model}
             models={models}
             placeholder={mode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL}
@@ -78,7 +84,7 @@ export default function ApiModelFields({ profile, locked, customProviderName, on
           />
         ) : (
           <label className="block">
-            <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">模型 ID</span>
+            <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">图片模型 ID</span>
             <input
               value={profile.model}
               onChange={(event) => onChange({ model: event.target.value })}
@@ -108,11 +114,11 @@ export default function ApiModelFields({ profile, locked, customProviderName, on
           {!IS_SITE_MODE && openai && <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>}
         </div>
       </div>
-      {openai && mode === 'responses' && (
+      {openai && mode === 'responses' && showImageTool && (
         <div>
           <ModelPicker
             key={`tool-${profile.id}`}
-            label="图像生成模型"
+            label="图像工具模型"
             value={profile.imageGenerationModel ?? ''}
             models={models}
             placeholder="使用接口默认值"

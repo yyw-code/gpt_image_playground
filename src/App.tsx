@@ -17,7 +17,7 @@ import AgentWorkspace from './components/AgentWorkspace'
 import InputBar from './components/InputBar'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
-import SettingsModal from './components/SettingsModal'
+import SettingsPage from './components/SettingsPage'
 import UpdateModal from './components/UpdateModal'
 import ConfirmDialog from './components/ConfirmDialog'
 import DataProgressDialog from './components/DataProgressDialog'
@@ -40,9 +40,10 @@ import { getTauriStorageLoadError } from './lib/tauriStorage'
 
 let defaultConfigImportStarted = false
 
-/** 初始化工作台；站点模式停用上游推广、公告和版本更新弹窗。 */
+/** 初始化工作台；设置使用独立页面，隐藏时保留工作台组件和输入上下文。 */
 export default function App() {
   const appMode = useStore((s) => s.appMode)
+  const showSettings = useStore((s) => s.showSettings)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   const writeLogFile = useStore((s) => s.settings.writeLogFile)
@@ -198,21 +199,23 @@ export default function App() {
 
   return (
     <>
-      <Header />
-      {appMode === 'agent' ? (
-        <AgentWorkspace />
-      ) : (
-        <main data-home-main data-drag-select-surface className="pb-48">
-          <div className="safe-area-x max-w-7xl mx-auto">
-            <SearchBar />
-            {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
-          </div>
-        </main>
-      )}
-      <InputBar />
-      <DetailModal />
-      <Lightbox />
-      <SettingsModal />
+      <div hidden={showSettings} inert={showSettings}>
+        <Header />
+        {appMode === 'agent' ? (
+          <AgentWorkspace />
+        ) : (
+          <main data-home-main data-drag-select-surface className="pb-48">
+            <div className="safe-area-x max-w-7xl mx-auto">
+              <SearchBar />
+              {filterFavorite && !activeFavoriteCollectionId ? <FavoriteCollectionsView /> : <TaskGrid />}
+            </div>
+          </main>
+        )}
+        <InputBar />
+        <DetailModal />
+        <Lightbox />
+      </div>
+      <SettingsPage />
       {!IS_SITE_MODE && <UpdateModal />}
       <DataProgressDialog />
       <ConfirmDialog />
