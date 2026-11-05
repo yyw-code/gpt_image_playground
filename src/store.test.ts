@@ -602,6 +602,69 @@ describe('aspect ratio revised prompt handling', () => {
   })
 })
 
+describe('site Images batch task results', () => {
+  const profile = createDefaultOpenAIProfile({ id: 'site-batch', baseUrl: 'https://site.example/v1', apiKey: 'test-key', apiMode: 'images', codexCli: false, streamImages: false, timeout: 1 })
+  let store: typeof import('./store')
+
+  beforeEach(async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_SITE_MODE', 'true')
+    store = await import('./store')
+    const site = await import('./lib/siteProfiles')
+    site.setSiteConnection(profile)
+    await clearTasks()
+    await clearImages()
+    vi.mocked(callImageApi).mockReset()
+    store.useStore.setState({
+      settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }),
+      appMode: 'gallery', prompt: 'Draw a cat.', inputImages: [], tasks: [],
+      params: { ...DEFAULT_PARAMS, n: 3 }, maskDraft: null,
+      showToast: vi.fn(), setConfirmDialog: vi.fn(),
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it.each([3, 2, 0])('keeps one task while pending and records %i successful outputs after completion', async (count) => {
+    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
+    vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+
+    await store.submitTask()
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+
+    const pending = store.useStore.getState().tasks
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ status: 'running', outputImages: [], params: { n: 3 } })
+    expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1000)).toBe(false)
+    setTimeoutSpy.mockRestore()
+
+    if (count === 0) request.reject(new Error('Generation failed'))
+    else request.resolve({
+      images: Array.from({ length: count }, (_, index) => `data:image/png;base64,image-${index}`),
+      actualParams: { n: count },
+      failedRequests: count === 2 ? [{ requestIndex: 1, error: 'Generation failed' }] : undefined,
+    })
+    await vi.waitFor(() => expect(store.useStore.getState().tasks[0]?.status).toBe(count ? 'done' : 'error'))
+
+    const state = store.useStore.getState()
+    expect(state.tasks).toHaveLength(1)
+    expect(state.tasks[0].id).toBe(pending[0].id)
+    expect(state.tasks[0].outputImages).toHaveLength(count)
+    expect(state.tasks[0].params.n).toBe(3)
+    if (count === 0) expect(state.tasks[0].error).toBe('Generation failed')
+    else {
+      expect(state.tasks[0].actualParams?.n).toBe(count)
+      expect(state.tasks[0].outputErrors).toEqual(count === 2 ? [{ requestIndex: 1, error: 'Generation failed' }] : undefined)
+      expect(state.showToast).toHaveBeenCalledWith(count === 2 ? '生成完成：成功 2 张，失败 1 张' : '生成完成，共 3 张图片', count === 2 ? 'error' : 'success')
+    }
+  })
+})
+
 describe('mask draft lifecycle in store actions', () => {
   beforeEach(() => {
     vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })

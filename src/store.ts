@@ -1175,14 +1175,14 @@ function scheduleOpenAIWatchdog(taskId: string, timeoutSeconds: number, profile?
   openAIWatchdogTimers.set(taskId, timer)
 }
 
-/** 判断多图是否拆为独立请求，避免对 Grok 批次误用单请求超时策略。 */
+/** 判断多图是否拆为独立请求，让本站 Images 等拆分任务沿用每个请求自身的超时处理。 */
 function usesConcurrentImageRequests(settings: AppSettings, profile: ApiProfile, params: TaskParams, hasInputImages: boolean) {
   const n = params.n > 0 ? params.n : 1
   if (n <= 1) return false
   if (profile.provider === 'grok') return true
   if (profile.provider === 'openai') {
     if (profile.apiMode === 'responses') return true
-    return profile.apiMode === 'images' && (profile.codexCli || profile.streamImages)
+    return profile.apiMode === 'images' && (IS_SITE_MODE || profile.codexCli || profile.streamImages)
   }
   return profile.provider !== 'fal' && profile.codexCli && !isAsyncCustomProviderTask(settings, profile.provider, hasInputImages)
 }

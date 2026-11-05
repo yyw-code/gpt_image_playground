@@ -63,6 +63,28 @@ function loadImage(image: HTMLImageElement, width: number, height: number) {
 }
 
 describe('详情原图尺寸与比例', () => {
+  it.each([false, true])('同一多图任务可切换查看全部结果，部分失败=%s', async (partialFailure) => {
+    task.params.n = 3
+    task.outputImages = partialFailure ? ['output', 'output-3'] : ['output', 'output-2', 'output-3']
+    task.actualParams = { n: partialFailure ? 2 : 3 }
+    task.outputErrors = partialFailure ? [{ requestIndex: 1, error: 'Generation failed' }] : undefined
+    const { container } = await renderDetail()
+    const quantity = [...container.querySelectorAll('span')].find((span) => span.textContent === '生成张数')?.parentElement
+    expect(quantity?.textContent).toContain(partialFailure ? '3|2' : '3')
+    expect(container.textContent).toContain('1 / 3')
+
+    act(() => container.querySelector('path[d="M9 5l7 7-7 7"]')!.closest('button')!.click())
+    expect(container.textContent).toContain('2 / 3')
+    if (partialFailure) {
+      expect(container.textContent).toContain('第 2 张生成失败')
+      expect(container.textContent).toContain('Generation failed')
+    } else expect(container.querySelector('img[data-image-id="output-2"]')).not.toBeNull()
+
+    act(() => container.querySelector('path[d="M9 5l7 7-7 7"]')!.closest('button')!.click())
+    expect(container.textContent).toContain('3 / 3')
+    expect(container.querySelector('img[data-image-id="output-3"]')).not.toBeNull()
+  })
+
   it('展示 2.6 请求与实际复杂度的差异', async () => {
     task.apiModel = 'gpt-image-2.6-flare'
     task.params.complexity = 'low'

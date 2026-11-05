@@ -22,6 +22,7 @@ import { useHintTooltip } from '../hooks/useHintTooltip'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getDownloadErrorMessage, getTaskOutputImageZipEntries, withSaveLocation } from '../lib/downloadImages'
 import { pickSaveDir } from '../lib/saveFile'
 import { isTauri } from '../lib/platform'
+import { IS_SITE_MODE } from '../lib/siteMode'
 import SizePickerModal from './SizePickerModal'
 import { CloseIcon, CollapseIcon, ExpandIcon, SketchIcon } from './icons'
 import { CommentBadge } from './CommentMarks'
@@ -87,7 +88,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
-/** 维护画廊和 Agent 草稿，按图片模型与通道联动参数，保留历史配置临时复用的请求归属。 */
+/** 维护画廊和 Agent 草稿，按图片模型与通道联动参数及多图提示，保留历史配置临时复用的请求归属。 */
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
@@ -527,7 +528,7 @@ export default function InputBar() {
   const isFalTextToImage = isFalProvider && inputImages.length === 0
   const nDraftValue = Number(nInput)
   const effectiveNValue = Number.isNaN(nDraftValue) ? params.n : nDraftValue
-  const streamConcurrentByN = (isGrokProvider || activeProfile.codexCli || activeProfile.provider === 'openai' && (activeProfile.streamImages || activeProfile.apiMode === 'responses')) && !agentAutoImageCount && effectiveNValue > 1
+  const streamConcurrentByN = (isGrokProvider || activeProfile.codexCli || activeProfile.provider === 'openai' && (IS_SITE_MODE || activeProfile.streamImages || activeProfile.apiMode === 'responses')) && !agentAutoImageCount && effectiveNValue > 1
   const nLimitHintText = agentAutoImageCount
     ? 'Agent 模式下数量由模型根据提示词自动决定'
     : isFalProvider

@@ -444,9 +444,10 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
     : callImagesApi(opts, profile)
 }
 
+/** 本站、Codex 和流式多图使用独立单图请求，并在全部结束后合并成功结果与失败信息。 */
 async function callImagesApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const n = opts.params.n > 0 ? opts.params.n : 1
-  if ((profile.codexCli || (profile.streamImages && n > 1)) && n > 1) {
+  if (n > 1 && (profile.codexCli || profile.streamImages || IS_SITE_MODE && profile.provider === 'openai')) {
     return callImagesApiConcurrent(opts, profile, n)
   }
 
