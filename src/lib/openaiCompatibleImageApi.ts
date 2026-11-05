@@ -26,7 +26,7 @@ import {
   pickActualParams,
   PROMPT_REWRITE_GUARD_PREFIX,
 } from './imageApiShared'
-import { getImageGenerationModel } from './imageModels'
+import { getImageGenerationModel, getImageRequestParameters } from './imageModels'
 import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
 import { appendImageAspectRatioPrompt, prependCodexCliSizePrompt } from './size'
@@ -131,6 +131,7 @@ function getStreamEventErrorMessage(event: Record<string, unknown>): string | nu
   return null
 }
 
+/** 组装图片工具，仅发送模型与通道支持的原生参数，保留流式和遮罩协议。 */
 function createResponsesImageTool(
   params: TaskParams,
   isEdit: boolean,
@@ -141,26 +142,13 @@ function createResponsesImageTool(
   const tool: Record<string, unknown> = {
     type: 'image_generation',
     action: isEdit ? 'edit' : 'generate',
-    output_format: params.output_format,
-    moderation: params.moderation,
+    ...getImageRequestParameters(params, profile),
   }
   const imageModel = getImageGenerationModel(profile)
   if (imageModel) tool.model = imageModel
 
-  if (!profile.codexCli) {
-    tool.size = params.size
-  }
-
   if (profile.streamImages) {
     tool.partial_images = getStreamPartialImages(profile)
-  }
-
-  if (!profile.codexCli) {
-    tool.quality = params.quality
-  }
-
-  if (params.output_format !== 'png' && params.output_compression != null) {
-    tool.output_compression = params.output_compression
   }
 
   if (nativeTransparentBackground) {
@@ -486,15 +474,12 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   return mergeConcurrentApiResults(results)
 }
 
-/** 提交单次 Images 生图或编辑；本站及 Codex 以额外构图提示保留比例，参数字段沿用原逻辑。 */
+/** 提交单次 Images 生图或编辑；构图提示与原生参数分别受通道能力约束。 */
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
-  const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
-    ? prependCodexCliSizePrompt(originalPrompt, params.size)
-    : originalPrompt
   const aspectPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
-    ? appendImageAspectRatioPrompt(sizePrompt, params.size)
-    : sizePrompt
+    ? appendImageAspectRatioPrompt(originalPrompt, params.size)
+    : originalPrompt
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
     : aspectPrompt
@@ -515,22 +500,13 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       const formData = new FormData()
       formData.append('model', profile.model)
       formData.append('prompt', prompt)
-      if (!profile.codexCli) {
-        formData.append('size', params.size)
+      for (const [key, value] of Object.entries(getImageRequestParameters(params, profile))) {
+        formData.append(key, String(value))
       }
-      formData.append('output_format', params.output_format)
-      formData.append('moderation', params.moderation)
       if (opts.nativeTransparentBackground) {
         formData.append('background', 'transparent')
       }
 
-      if (!profile.codexCli) {
-        formData.append('quality', params.quality)
-      }
-
-      if (params.output_format !== 'png' && params.output_compression != null) {
-        formData.append('output_compression', String(params.output_compression))
-      }
       if (params.n > 1) {
         formData.append('n', String(params.n))
       }
@@ -581,25 +557,13 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
       const body: Record<string, unknown> = {
         model: profile.model,
         prompt,
-        output_format: params.output_format,
-        moderation: params.moderation,
+        ...getImageRequestParameters(params, profile),
       }
 
       if (opts.nativeTransparentBackground) {
         body.background = 'transparent'
       }
 
-      if (!profile.codexCli) {
-        body.size = params.size
-      }
-
-      if (!profile.codexCli) {
-        body.quality = params.quality
-      }
-
-      if (params.output_format !== 'png' && params.output_compression != null) {
-        body.output_compression = params.output_compression
-      }
       if (params.n > 1) {
         body.n = params.n
       }
@@ -707,6 +671,10 @@ function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) 
   const params = {
     ...opts.params,
     ...(profile.codexCli ? { size: undefined, quality: undefined } : {}),
+    ...(profile.provider === 'grok' ? {
+      quality: profile.model === 'grok-imagine-image-2.0' ? opts.params.quality : undefined,
+      aspect_ratio: opts.params.aspect_ratio === 'auto' ? undefined : opts.params.aspect_ratio,
+    } : {}),
     ...(opts.nativeTransparentBackground ? { background: 'transparent' } : {}),
   }
 
@@ -1039,15 +1007,12 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
   return mergeConcurrentApiResults(results)
 }
 
-/** 提交单次 Responses 图片工具请求；补充本站或 Codex 构图提示，保留原有工具参数和错误处理。 */
+/** 提交单次 Responses 图片工具请求；受限通道只补充构图提示，原生字段使用统一能力规则。 */
 async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
-  const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
-    ? prependCodexCliSizePrompt(prompt, params.size)
-    : prompt
   const requestPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
-    ? appendImageAspectRatioPrompt(sizePrompt, params.size)
-    : sizePrompt
+    ? appendImageAspectRatioPrompt(prompt, params.size)
+    : prompt
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)

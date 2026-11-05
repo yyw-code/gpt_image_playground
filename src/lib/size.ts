@@ -9,7 +9,25 @@ const MAX_1K_PIXELS = 1_572_864
 const COMMON_ASPECT_RATIOS = [[1, 1], [4, 3], [3, 4], [3, 2], [2, 3], [16, 9], [9, 16], [21, 9], [9, 21]] as const
 
 export type SizeTier = '1K' | '2K' | '4K'
+export type ImageSizeMode = 'custom' | 'fixed' | 'composition' | 'auto' | 'grok'
+export const FIXED_IMAGE_SIZES = ['1024x1024', '1536x1024', '1024x1536']
 type PresetRatio = '1:1' | '3:2' | '2:3' | '16:9' | '9:16' | '4:3' | '3:4' | '21:9'
+
+/** 根据模型尺寸契约规范当前参数；不改写历史任务，受限通道仅保留构图用尺寸。 */
+export function normalizeModelImageSize(size: string, mode: ImageSizeMode): string {
+  if (mode === 'auto' || mode === 'grok') return 'auto'
+  if (mode === 'fixed') return FIXED_IMAGE_SIZES.includes(size.trim()) ? size.trim() : 'auto'
+  const match = size.match(SIZE_PATTERN)
+  if (!match || ![Number(match[1]), Number(match[2])].every((edge) => Number.isSafeInteger(edge) && edge > 0)) return 'auto'
+  if (mode === 'composition') return normalizeCodexCliImageSize(size)
+  return normalizeImageSize(size)
+}
+
+/** 标记超过常规像素预算的原生尺寸；实验支持不等于接口保证兑现。 */
+export function isExperimentalImageSize(size: string): boolean {
+  const match = size.match(SIZE_PATTERN)
+  return Boolean(match && Number(match[1]) * Number(match[2]) > 2560 * 1440)
+}
 
 function roundToMultiple(value: number, multiple: number) {
   return Math.max(multiple, Math.round(value / multiple) * multiple)

@@ -120,6 +120,31 @@ describe('Grok image integration', () => {
     expect(result.images).toEqual([`data:image/png;base64,${PNG}`])
   })
 
+  it.each([false, true])('sends 2.0 quality and omits automatic aspect ratio for edit=%s', async (edit) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: JPEG }] })))
+    const value = settings()
+    value.profiles[0].model = 'grok-imagine-image-2.0'
+    value.model = 'grok-imagine-image-2.0'
+    await callImageApi({ settings: value, prompt: 'a cup', params: { ...DEFAULT_PARAMS, quality: 'medium', aspect_ratio: 'auto' }, inputImageDataUrls: edit ? [`data:image/jpeg;base64,${JPEG}`] : [] })
+    const [url, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(String(init?.body))
+    expect(String(url)).toContain(edit ? 'images/edits' : 'images/generations')
+    expect(body.quality).toBe('medium')
+    expect(body).not.toHaveProperty('aspect_ratio')
+    expect(body).not.toHaveProperty('output_format')
+    expect(body).not.toHaveProperty('size')
+  })
+
+  it('preserves the legacy quality model ID without sending a quality selector', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: JPEG }] })))
+    const value = settings()
+    value.profiles[0].model = 'grok-imagine-image-quality'
+    value.model = 'grok-imagine-image-quality'
+    await callImageApi({ settings: value, prompt: 'cup', params: { ...DEFAULT_PARAMS, quality: 'medium', aspect_ratio: '21:9' }, inputImageDataUrls: [] })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ model: 'grok-imagine-image-quality', aspect_ratio: '1:1' })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).not.toHaveProperty('quality')
+  })
+
   it('uses JSON image references for edits without dropping any of the three images', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: JPEG }] })))
     const images = [1, 2, 3].map(() => `data:image/png;base64,${PNG}`)
@@ -223,7 +248,7 @@ describe('Grok image integration', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('caps concurrent requests at two while preserving result order', async () => {
+  it.each([1, 2, 10])('dispatches %s single-image requests with concurrency capped at two', async (n) => {
     let active = 0
     let maxActive = 0
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
@@ -233,10 +258,11 @@ describe('Grok image integration', () => {
       active -= 1
       return new Response(JSON.stringify({ data: [{ b64_json: PNG }] }))
     })
-    const result = await callImageApi({ settings: settings(), prompt: 'cat', params: { ...DEFAULT_PARAMS, n: 5 }, inputImageDataUrls: [] })
-    expect(fetchMock).toHaveBeenCalledTimes(5)
-    expect(maxActive).toBe(2)
-    expect(result.images).toHaveLength(5)
+    const result = await callImageApi({ settings: settings(), prompt: 'cat', params: { ...DEFAULT_PARAMS, n }, inputImageDataUrls: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(n)
+    expect(maxActive).toBe(Math.min(n, 2))
+    expect(result.images).toHaveLength(n)
+    expect(fetchMock.mock.calls.every(([, init]) => JSON.parse(String(init?.body)).n === 1)).toBe(true)
   })
 
   it('rejects an empty prompt before dispatch', async () => {

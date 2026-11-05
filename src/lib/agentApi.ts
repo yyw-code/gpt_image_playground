@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import { appendStreamingFormatHint, createRequestTimeoutError, getApiErrorMessage, getResponsesImageResultBase64, maybeAppendImageToolDroppedHint, maybeAppendStreamingHint, MIME_MAP, normalizeBase64Image, pickActualParams, PROMPT_REWRITE_GUARD_PREFIX } from './imageApiShared'
-import { getImageGenerationModel } from './imageModels'
+import { getImageGenerationModel, getImageRequestParameters } from './imageModels'
 import { apiFetch } from './platform'
 import { getSiteProfileError } from './siteProfiles'
 import { normalizeResponsesOutputItems } from './responsesOutputState'
@@ -64,7 +64,7 @@ const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '- Do not use LaTeX delimiters like `\\(...\\)` or `\\[...\\]` in visible assistant text.',
 ].join('\n')
 
-/** 生成 Agent 工具策略，要求本站及 Codex 的每张图片提示词携带当前选择的画幅比例。 */
+/** 生成 Agent 工具策略与构图引导；受限通道不再要求精确像素前缀。 */
 function createAgentInstructions(settings: AppSettings, params: TaskParams, imageProfile: ApiProfile) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
@@ -86,9 +86,6 @@ function createAgentInstructions(settings: AppSettings, params: TaskParams, imag
     '- When the requested task is complete, stop calling tools and provide the final response.',
   ]
 
-  if (imageProfile.codexCli && params.size !== 'auto') {
-    instructions.push('', `- Start every image prompt with exactly "Generate at ${params.size} resolution." followed by a space.`)
-  }
   if (imageProfile.codexCli || IS_SITE_MODE && imageProfile.provider === 'openai') {
     const aspectInstruction = getImageAspectRatioInstruction(params.size)
     if (aspectInstruction) instructions.push('', `- Append this composition instruction to every image prompt, including reference-image edits and batch items: "${aspectInstruction}"`)
@@ -116,25 +113,15 @@ function createHeaders(profile: ApiProfile): Record<string, string> {
   }
 }
 
+/** 按图片模型和通道组装 Agent 工具，避免重新带入界面已禁用的原生参数。 */
 function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: string): Record<string, unknown> {
   const tool: Record<string, unknown> = {
     type: 'image_generation',
     action: 'auto',
-    output_format: params.output_format,
-    moderation: params.moderation,
+    ...getImageRequestParameters(params, profile),
   }
   const imageModel = getImageGenerationModel(profile)
   if (imageModel) tool.model = imageModel
-
-  if (!profile.codexCli) {
-    tool.size = params.size
-  }
-
-  tool.quality = params.quality
-
-  if (params.output_format !== 'png' && params.output_compression != null) {
-    tool.output_compression = params.output_compression
-  }
 
   if (profile.streamImages) {
     tool.partial_images = profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
@@ -742,7 +729,7 @@ export interface BatchImageCallResult {
 }
 
 /**
- * 使用 Responses API 生成一张批量图片，本站或 Codex 请求明确附带画幅比例；先校验连接，保留现有工具参数。
+ * 使用 Responses API 生成一张批量图片，补充构图引导，并按图片模型和通道筛选原生字段。
  */
 export async function callBatchImageSingle(opts: {
   profile: ApiProfile
@@ -798,18 +785,10 @@ export async function callBatchImageSingle(opts: {
     const tool: Record<string, unknown> = {
       type: 'image_generation',
       action: referenceImageDataUrls.length > 0 ? 'auto' : 'generate',
-      output_format: params.output_format,
-      moderation: params.moderation,
-      quality: params.quality,
+      ...getImageRequestParameters(params, profile),
     }
     const imageModel = getImageGenerationModel(profile)
     if (imageModel) tool.model = imageModel
-    if (!profile.codexCli) {
-      tool.size = params.size
-    }
-    if (params.output_format !== 'png' && params.output_compression != null) {
-      tool.output_compression = params.output_compression
-    }
     if (profile.streamImages) {
       tool.partial_images = profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
     }

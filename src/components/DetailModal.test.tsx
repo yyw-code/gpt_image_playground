@@ -63,6 +63,18 @@ function loadImage(image: HTMLImageElement, width: number, height: number) {
 }
 
 describe('详情原图尺寸与比例', () => {
+  it('展示 2.6 请求与实际复杂度的差异', async () => {
+    task.apiModel = 'gpt-image-2.6-flare'
+    task.params.complexity = 'low'
+    task.actualParams = { complexity: 'medium' }
+    const { container } = await renderDetail()
+    const card = [...container.querySelectorAll('span')].find((span) => span.textContent === '构图复杂度')?.parentElement
+    expect(card?.textContent).toContain('low|medium')
+  })
+  it('没有请求复杂度和接口回显时不显示复杂度', async () => {
+    const { container } = await renderDetail()
+    expect(container.textContent).not.toContain('构图复杂度')
+  })
   it('原图尚未解码时正常打开，未知尺寸不提前提示比例错误', async () => {
     const { container } = await renderDetail()
     expect(container.textContent).toContain('参数配置')
@@ -97,5 +109,20 @@ describe('详情原图尺寸与比例', () => {
     loadImage(image, 1672, 941)
     expect(container.querySelector('[role="status"]')).toBeNull()
     expect(container.textContent).toContain('16:9')
+  })
+
+  it('Grok 2.0 展示质量回显、实际格式及未满额张数，原始 JPEG 不标成 PNG 不匹配', async () => {
+    task.apiProvider = 'grok'
+    task.apiModel = 'grok-imagine-image-2.0'
+    task.params = { ...DEFAULT_PARAMS, quality: 'medium', resolution: '2k', aspect_ratio: '21:9', n: 2 }
+    task.actualParams = { quality: 'low', output_format: 'jpeg', n: 1 }
+    const { container } = await renderDetail()
+    const card = (label: string) => [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement
+    expect(card('分辨率档位')?.textContent).toContain('2K')
+    expect(card('比例')?.textContent).toContain('21:9')
+    expect(card('质量')?.textContent).toContain('medium|low')
+    expect(card('格式')?.textContent).toContain('auto|jpeg')
+    expect(card('格式')?.textContent).not.toContain('png')
+    expect(card('生成张数')?.textContent).toContain('2|1')
   })
 })

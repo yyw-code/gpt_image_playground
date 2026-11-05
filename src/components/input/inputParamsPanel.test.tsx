@@ -38,6 +38,17 @@ function props(provider: string): ComponentProps<typeof InputParamsPanel> {
 }
 
 describe('Grok generation controls', () => {
+  it('offers composition complexity only on native 2.6 Images and retains existing output formats', () => {
+    const value = props('openai')
+    value.activeProfile.model = 'gpt-image-2.6-flare'
+    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
+    expect(html).toContain('构图复杂度')
+    expect(html).toContain('接口默认')
+    expect(html).toContain('PNG / JPEG / WebP')
+    for (const patch of [{ model: 'gpt-image-2.5-flare' }, { codexCli: true }, { apiMode: 'responses' as const, imageGenerationModel: 'gpt-image-2.6-flare' }]) {
+      expect(renderToStaticMarkup(<InputParamsPanel {...value} activeProfile={{ ...value.activeProfile, ...patch }} />)).not.toContain('构图复杂度')
+    }
+  })
   it('shows native geometry and original image format instead of GPT controls', () => {
     const html = renderToStaticMarkup(<InputParamsPanel {...props('grok')} />)
     expect(html).toContain('分辨率')
@@ -58,5 +69,49 @@ describe('Grok generation controls', () => {
     expect(html).toContain('质量')
     expect(html).toContain('WebP')
     expect(html).not.toContain('接口原始格式')
+  })
+
+  it('offers only 2.0 quality and adds its wide ratios', () => {
+    const value = props('grok')
+    value.activeProfile.model = 'grok-imagine-image-2.0'
+    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
+    expect(html).toContain('auto / low / medium')
+    expect(html).toContain('21:9')
+    expect(html).toContain('5:2')
+    expect(html).toContain('生成张数')
+    expect(html).toContain('max="10"')
+    expect(html).not.toContain('high')
+  })
+
+  it('keeps legacy quality wording and does not offer 2.0-specific controls', () => {
+    const value = props('grok')
+    value.activeProfile.model = 'grok-imagine-image-quality'
+    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
+    expect(html).toContain('迁移至 2.0 low')
+    expect(html).not.toContain('21:9')
+    expect(html).not.toContain('质量</span>')
+  })
+
+  it('shows composition guidance and original format for Codex', () => {
+    const value = props('openai')
+    value.activeProfile.codexCli = true
+    value.displaySize = '16:9'
+    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
+    expect(html).toContain('构图比例')
+    expect(html).toContain('接口原始格式')
+    expect(html).not.toContain('WebP')
+    expect(html).not.toContain('压缩率')
+  })
+
+  it('explains unknown model defaults and keeps Agent count automatic', () => {
+    const value = props('openai')
+    value.activeProfile.model = 'unconfirmed-image'
+    value.agentAutoImageCount = true
+    value.nInput = 'auto'
+    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
+    expect(html).toContain('参数能力尚未确认')
+    expect(html).toContain('value="auto"')
+    expect(html).not.toContain('max="10"')
+    expect(html).not.toContain('WebP')
   })
 })

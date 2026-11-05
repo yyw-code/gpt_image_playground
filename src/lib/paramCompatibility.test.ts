@@ -1,9 +1,37 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
-import { getOutputImageLimitForSettings, normalizeParamsForSettings } from './paramCompatibility'
+import { getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from './paramCompatibility'
 
 describe('parameter compatibility', () => {
+  it('keeps valid 2.6 complexity and clears it from state after changing the model', () => {
+    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.6-flare' })
+    const current = { ...DEFAULT_PARAMS, complexity: 'low' as const }
+    expect(normalizeParamsForSettings(current, normalizeSettings({ profiles: [profile] })).complexity).toBe('low')
+    const next = normalizeParamsForSettings(current, normalizeSettings({ profiles: [{ ...profile, model: 'gpt-image-2.5-flare' }] }))
+    expect(next).not.toHaveProperty('complexity')
+    expect(getChangedParams(current, next)).toHaveProperty('complexity', undefined)
+    expect(getChangedParams({ ...current, complexity: undefined }, next)).toEqual({})
+  })
+  it.each([0, -2, NaN, Infinity, 1.9, 20])('normalizes output count %s to a finite integer', (n) => {
+    const normalized = normalizeParamsForSettings({ ...DEFAULT_PARAMS, n }, DEFAULT_SETTINGS)
+    expect(normalized.n).toBe(n === 20 ? 10 : 1)
+  })
+
+  it('clears controls unsupported by an unknown OpenAI alias', () => {
+    const settings = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ model: 'vendor-image' })] })
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, size: '3840x2160', quality: 'max', output_format: 'webp', output_compression: 80, transparent_output: true }, settings)).toMatchObject({ size: 'auto', quality: 'auto', output_format: 'png', output_compression: null, transparent_output: false })
+  })
+
+  it('keeps Grok 2.0 quality and ratios but clears them when switching models', () => {
+    const profile = createDefaultOpenAIProfile({ provider: 'grok', model: 'grok-imagine-image-2.0' })
+    const settings = normalizeSettings({ profiles: [profile] })
+    const params = { ...DEFAULT_PARAMS, quality: 'medium' as const, aspect_ratio: '21:9' }
+    expect(normalizeParamsForSettings(params, settings)).toMatchObject({ quality: 'medium', aspect_ratio: '21:9' })
+    const older = normalizeSettings({ profiles: [{ ...profile, model: 'grok-imagine-image' }] })
+    expect(normalizeParamsForSettings(params, older)).toMatchObject({ quality: 'auto', aspect_ratio: '1:1' })
+    expect(normalizeParamsForSettings({ ...params, quality: 'high' }, settings).quality).toBe('auto')
+  })
   it('limits OpenAI output count to 10', () => {
     const openAIProfile = createDefaultOpenAIProfile({ apiKey: 'test-key', streamImages: false })
     const settings = normalizeSettings({

@@ -63,8 +63,9 @@ export function ActualValueBadge({ value, className = '', variant = 'highlight' 
   )
 }
 
+/** 比较任务快照与实际回显；未指定复杂度、Agent 张数及 Grok 原始格式视为接口自动决定。 */
 export function getParamDisplay(task: TaskRecord, paramKey: ParamKey, actualParams = task.actualParams) {
-  const requestedValue = task.sourceMode === 'agent' && paramKey === 'n'
+  const requestedValue = task.sourceMode === 'agent' && paramKey === 'n' || task.apiProvider === 'grok' && paramKey === 'output_format' || paramKey === 'complexity' && task.params.complexity === undefined
     ? 'auto'
     : task.params[paramKey]
   const actualValue = actualParams?.[paramKey]

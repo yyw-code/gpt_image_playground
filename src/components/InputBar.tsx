@@ -5,13 +5,13 @@ import { deleteFavoriteCollection, useStore, submitTask, submitAgentMessage, sto
 import { DEFAULT_PARAMS, MAX_INPUT_IMAGES, type TaskRecord } from '../types'
 import { getActiveAgentRounds } from '../lib/agentConversationState'
 import { createDefaultOpenAIProfile, getActiveApiProfile, getAgentTextApiProfile, getAgentImageApiProfile, normalizeSettings, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
-import { getImageGenerationModel, isGptImage25Model } from '../lib/imageModels'
+import { getImageParameterCapabilities } from '../lib/imageModels'
 import { MAX_GROK_INPUT_IMAGES } from '../lib/grokImage'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { splitBatchPrompts } from '../lib/batchPrompts'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageComments, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
-import { normalizeCodexCliImageSize, normalizeImageSize } from '../lib/size'
+import { formatImageRatio, normalizeCodexCliImageSize, normalizeImageSize, parseRatio } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
@@ -87,7 +87,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
-/** 维护输入草稿，按工作区展示独立模型、生成参数及参考图限制，保留历史配置临时复用的请求归属。 */
+/** 维护画廊和 Agent 草稿，按图片模型与通道联动参数，保留历史配置临时复用的请求归属。 */
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
@@ -515,39 +515,32 @@ export default function InputBar() {
   const activeProvider = activeProfile.provider
   const isFalProvider = activeProvider === 'fal'
   const isGrokProvider = activeProvider === 'grok'
+  const imageCapabilities = getImageParameterCapabilities(activeProfile)
   const inputImageLimit = isGrokProvider ? MAX_GROK_INPUT_IMAGES : MAX_INPUT_IMAGES
   const agentAutoImageCount = appMode === 'agent'
-  const moderationDisabled = isFalProvider || isGrokProvider
-  const transparentOutputAvailable = appMode === 'gallery' && !isGrokProvider
+  const moderationDisabled = isFalProvider || !imageCapabilities.nativeOutput
+  const transparentOutputAvailable = appMode === 'gallery' && !isGrokProvider && (imageCapabilities.nativeOutput || imageCapabilities.sizeMode === 'composition' && activeProfile.transparentBackgroundMethod === 'local')
   const showTransparentOutputControl = transparentOutputAvailable && (params.output_format === 'png' || params.output_format === 'webp')
   const transparentOutputEnabled = transparentOutputAvailable && showTransparentOutputControl && params.transparent_output
-  const compressionDisabled = params.output_format === 'png' || isFalProvider || isGrokProvider
+  const compressionDisabled = params.output_format === 'png' || isFalProvider || !imageCapabilities.nativeOutput
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
   const isFalTextToImage = isFalProvider && inputImages.length === 0
   const nDraftValue = Number(nInput)
   const effectiveNValue = Number.isNaN(nDraftValue) ? params.n : nDraftValue
-  const streamConcurrentByN = (isGrokProvider || (activeProfile.provider === 'openai' && activeProfile.streamImages === true)) && !agentAutoImageCount && effectiveNValue > 1
+  const streamConcurrentByN = (isGrokProvider || activeProfile.codexCli || activeProfile.provider === 'openai' && (activeProfile.streamImages || activeProfile.apiMode === 'responses')) && !agentAutoImageCount && effectiveNValue > 1
   const nLimitHintText = agentAutoImageCount
     ? 'Agent 模式下数量由模型根据提示词自动决定'
     : isFalProvider
-    ? `fal.ai 最大请求数量为 ${outputImageLimit}`
-    : `${isGrokProvider ? 'Grok' : 'OpenAI'} 最大请求数量为 ${outputImageLimit}`
-  const displaySize = isFalTextToImage && params.size === 'auto'
+    ? `fal.ai 每条提示词最多生成 ${outputImageLimit} 张，实际成功张数以结果为准`
+    : `${isGrokProvider ? 'Grok' : 'OpenAI'} 每条提示词目标 1～${outputImageLimit} 张，实际成功张数以结果为准`
+  const requestedDimensions = parseRatio(params.size)
+  const displaySize = imageCapabilities.sizeMode === 'auto' ? '接口自动'
+    : imageCapabilities.sizeMode === 'composition' ? requestedDimensions ? formatImageRatio(requestedDimensions.width, requestedDimensions.height) : '自动'
+    : isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
     : (activeProfile.codexCli ? normalizeCodexCliImageSize(params.size) : normalizeImageSize(params.size)) || DEFAULT_PARAMS.size
 
-  const qualityOptions = [
-    ...(!isFalProvider ? [{ label: 'auto', value: 'auto' }] : []),
-    { label: 'low', value: 'low' },
-    { label: 'medium', value: 'medium' },
-    { label: 'high', value: 'high' },
-    ...(isGptImage25Model(getImageGenerationModel(activeProfile))
-      ? [
-          { label: 'xhigh', value: 'xhigh' },
-          { label: 'max', value: 'max' },
-        ]
-      : []),
-  ]
+  const qualityOptions = imageCapabilities.qualities.filter((quality) => !isFalProvider || quality !== 'auto').map((quality) => ({ label: quality, value: quality }))
   const atImageLimit = inputImages.length >= inputImageLimit
   const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${inputImageLimit} 张），无法继续添加` : '添加图片'
   const transparentOutputHint = useHintTooltip()
@@ -1763,6 +1756,7 @@ export default function InputBar() {
           onClose={() => setShowSizePicker(false)}
           allowAuto={!isFalTextToImage}
           codexCli={activeProfile.codexCli}
+          sizeMode={imageCapabilities.sizeMode}
         />
       )}
 

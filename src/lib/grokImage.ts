@@ -1,5 +1,6 @@
 import type { ApiProfile, CustomProviderDefinition, TaskParams } from '../types'
 import type { CallApiResult } from './imageApiShared'
+import { getBase64ImageFormat } from './imageApiShared'
 
 export const GROK_IMAGE_MODELS = ['grok-imagine-image', 'grok-imagine-image-2.0', 'grok-imagine-image-quality']
 export const GROK_IMAGE_ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '2:1', '1:2', '19.5:9', '9:19.5', '20:9', '9:20']
@@ -12,6 +13,7 @@ const GROK_IMAGE_BODY = {
   response_format: 'b64_json',
   resolution: '$params.resolution',
   aspect_ratio: '$params.aspect_ratio',
+  quality: '$params.quality',
 }
 const GROK_IMAGE_RESULT = { imageUrlPaths: ['data.*.url'], b64JsonPaths: ['data.*.b64_json'] }
 
@@ -29,9 +31,14 @@ export function normalizeGrokResolution(value: unknown): TaskParams['resolution'
   return value === '1k' || value === '2k' ? value : undefined
 }
 
-/** 校验 Grok 原生比例；保留合法比例原值，不按 GPT 的像素规则规整。 */
+/** 返回所选 Grok 模型的比例；旧 quality 别名保留原有能力，不自动改成 2.0。 */
+export function getGrokAspectRatios(model: string): string[] {
+  return ['auto', ...GROK_IMAGE_ASPECT_RATIOS, ...(model === 'grok-imagine-image-2.0' ? ['21:9', '5:2'] : [])]
+}
+
+/** 校验持久化比例的全集；模型专属限制在请求配置规范化时检查。 */
 export function normalizeGrokAspectRatio(value: unknown): string | undefined {
-  return typeof value === 'string' && GROK_IMAGE_ASPECT_RATIOS.includes(value) ? value : undefined
+  return typeof value === 'string' && getGrokAspectRatios('grok-imagine-image-2.0').includes(value) ? value : undefined
 }
 
 /** 在画廊、Agent 和历史重试共用入口检查 Grok 能力；不改变或截断输入草稿。 */
@@ -46,10 +53,8 @@ export function getGrokImageInputError(profile: ApiProfile, inputCount: number, 
 /** 根据返回图片的文件头修正 MIME 和实际格式，避免把 Grok JPEG 数据误标成 PNG。 */
 export function normalizeGrokImageResult(result: CallApiResult): CallApiResult {
   const formats = result.images.map((image) => {
-    const encoded = image.slice(image.indexOf(',') + 1)
-    if (encoded.startsWith('iVBORw0KGgo')) return 'png' as const
-    if (encoded.startsWith('/9j/')) return 'jpeg' as const
-    if (encoded.startsWith('UklGR') && encoded.length >= 16 && atob(encoded.slice(0, 16)).slice(8, 12) === 'WEBP') return 'webp' as const
+    const format = getBase64ImageFormat(image)
+    if (format) return format
     throw new Error('Grok 返回的图片格式无法识别，支持 PNG、JPEG 和 WebP。')
   })
   return {

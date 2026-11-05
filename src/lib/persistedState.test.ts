@@ -58,6 +58,15 @@ function fallback() {
 }
 
 describe('persisted state codec', () => {
+  it('restores valid optional complexity independently and discards invalid external values', () => {
+    const saved = createPersistedState({ ...source(), params: { ...DEFAULT_PARAMS, complexity: 'low' }, galleryParams: DEFAULT_PARAMS, agentParams: { ...DEFAULT_PARAMS, complexity: 'medium' } })
+    const restored = normalizePersistedState(JSON.parse(JSON.stringify(saved)), fallback())!.state
+    expect(restored.galleryParams?.complexity).toBe('low')
+    expect(restored.agentParams?.complexity).toBe('medium')
+    for (const complexity of ['auto', 'max', {}, 1, null]) {
+      expect(normalizePersistedState({ params: { ...DEFAULT_PARAMS, complexity } }, fallback())!.state.params).not.toHaveProperty('complexity')
+    }
+  })
   it('两套生成参数分别保存和恢复，旧版共享参数仅复制一次', () => {
     const saved = createPersistedState({ ...source(), appMode: 'agent', params: { ...DEFAULT_PARAMS, size: '1024x1536' }, galleryParams: { ...DEFAULT_PARAMS, size: '1536x1024' }, agentParams: DEFAULT_PARAMS })
     const restored = normalizePersistedState(JSON.parse(JSON.stringify(saved)), fallback())!.state

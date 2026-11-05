@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { calculateImageSize, normalizeCodexCliImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
+import { calculateImageSize, FIXED_IMAGE_SIZES, formatImageRatio, isExperimentalImageSize, normalizeCodexCliImageSize, normalizeImageSize, parseRatio, type ImageSizeMode, type SizeTier } from '../lib/size'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import ViewportTooltip from './ViewportTooltip'
 
 const TIERS: SizeTier[] = ['1K', '2K', '4K']
 const SIZE_LIMIT_TEXT = '由于模型限制，不符合要求的分辨率会被自动规整：\n宽高均为 16 的倍数，最大边长 3840px，宽高比不超过 3:1，总像素限制为 655360-8294400。'
-const CODEX_CLI_SIZE_LIMIT_TEXT = '由于模型和 Codex CLI 限制，不符合要求的分辨率会被自动规整：\n宽高均为 16 的倍数，宽高比不超过 3:1，分辨率不超过 1K。'
 const CLAMPED_SIZE_TEXT = '由于模型限制，原始分辨率已被自动规整'
 const RATIOS = [
   { label: '1:1', value: '1:1' },
@@ -24,6 +23,7 @@ interface Props {
   onClose: () => void
   allowAuto?: boolean
   codexCli?: boolean
+  sizeMode?: ImageSizeMode
 }
 
 type Mode = 'auto' | 'ratio' | 'resolution'
@@ -46,7 +46,8 @@ function findPresetForSize(size: string) {
   return null
 }
 
-export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, codexCli = false }: Props) {
+/** 按模型提供固定尺寸或自定义尺寸；受限通道只选择构图比例，不承诺像素。 */
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, codexCli = false, sizeMode = 'custom' }: Props) {
   usePreventBackgroundScroll(true)
 
   const modalRef = useRef<HTMLDivElement>(null)
@@ -73,17 +74,22 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   }
 
   const currentPreset = findPresetForSize(currentSize)
+  const compositionOnly = codexCli || sizeMode === 'composition'
+  const fixedSizesOnly = sizeMode === 'fixed'
+  const [fixedSize, setFixedSize] = useState(FIXED_IMAGE_SIZES.includes(currentSize) ? currentSize : 'auto')
   const currentParsedSize = parseSize(currentSize)
   const [mode, setMode] = useState<Mode>(() => {
     if (!currentSize || currentSize === 'auto') return allowAuto ? 'auto' : 'ratio'
     if (currentPreset) return 'ratio'
+    if (compositionOnly) return 'ratio'
     return 'resolution'
   })
 
   // Ratio mode state
   const [tier, setTier] = useState<SizeTier>(currentPreset?.tier ?? '1K')
-  const [ratio, setRatio] = useState(currentPreset?.ratio ?? (allowAuto ? '1:1' : '4:3'))
-  const [customRatio, setCustomRatio] = useState('16:9')
+  // 受限通道没有像素输入页，恢复非预设尺寸时用其原比例初始化，避免确认后变成方形。
+  const [ratio, setRatio] = useState(currentPreset?.ratio ?? (compositionOnly && currentParsedSize ? 'custom' : allowAuto ? '1:1' : '4:3'))
+  const [customRatio, setCustomRatio] = useState(currentParsedSize ? `${currentParsedSize.width}:${currentParsedSize.height}` : '16:9')
 
   // Resolution mode state
   const [customW, setCustomW] = useState(currentParsedSize?.width ?? '1024')
@@ -91,16 +97,13 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
   const [hintVisible, setHintVisible] = useState(false)
   const hintTimerRef = useRef<number | null>(null)
-  const [tierHint, setTierHint] = useState<SizeTier | null>(null)
-  const tierHintTimerRef = useRef<number | null>(null)
 
   useEffect(() => () => {
     if (hintTimerRef.current != null) window.clearTimeout(hintTimerRef.current)
-    if (tierHintTimerRef.current != null) window.clearTimeout(tierHintTimerRef.current)
   }, [])
 
-  const normalizeSize = codexCli ? normalizeCodexCliImageSize : normalizeImageSize
-  const sizeLimitText = codexCli ? CODEX_CLI_SIZE_LIMIT_TEXT : SIZE_LIMIT_TEXT
+  const normalizeSize = compositionOnly ? normalizeCodexCliImageSize : normalizeImageSize
+  const sizeLimitText = SIZE_LIMIT_TEXT
 
   const activeRatio = ratio === 'custom' ? customRatio : ratio
   const parsedCustomRatio = parseRatio(customRatio)
@@ -112,6 +115,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   )
 
   const previewSize = useMemo(() => {
+    if (fixedSizesOnly) return fixedSize
     if (mode === 'auto') return 'auto'
     
     if (mode === 'ratio') {
@@ -129,7 +133,13 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     }
     
     return ''
-  }, [mode, tier, activeRatio, customW, customH, normalizeSize])
+  }, [mode, tier, activeRatio, customW, customH, normalizeSize, fixedSizesOnly, fixedSize])
+
+  /** 受限通道隐藏内部用于保存比例的像素值，只展示构图选择。 */
+  const displaySize = (size: string) => {
+    const parsed = parseRatio(size)
+    return compositionOnly && parsed ? formatImageRatio(parsed.width, parsed.height) : size
+  }
 
   const isClamped = useMemo(() => {
     if (!previewSize || previewSize === 'auto') return false
@@ -189,8 +199,8 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
       >
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100">设置图像尺寸</h3>
-            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">当前：{currentSize || 'auto'}</p>
+            <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100">{compositionOnly ? '设置构图比例' : '设置图像尺寸'}</h3>
+            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">当前：{displaySize(currentSize) || 'auto'}</p>
           </div>
           <button
             onClick={onClose}
@@ -204,7 +214,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
         </div>
 
         <div className="space-y-6">
-          <div className="flex rounded-xl bg-gray-100/80 p-1 dark:bg-white/[0.04]">
+          {!fixedSizesOnly && <div className="flex rounded-xl bg-gray-100/80 p-1 dark:bg-white/[0.04]">
             {allowAuto && (
               <button
                 onClick={() => setMode('auto')}
@@ -219,16 +229,17 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             >
               按比例
             </button>
-            <button
+            {!compositionOnly && <button
               onClick={() => setMode('resolution')}
               className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'resolution' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
             >
               自定义宽高
-            </button>
-          </div>
+            </button>}
+          </div>}
 
           <div className="h-[380px] max-h-[55vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 pr-1 -mr-1 pb-2">
-            {mode === 'auto' && (
+            {fixedSizesOnly && <div className="grid grid-cols-2 gap-2">{['auto', ...FIXED_IMAGE_SIZES].map((size) => <button key={size} className={buttonClass(fixedSize === size)} onClick={() => setFixedSize(size)}>{size === 'auto' ? '自动' : size}</button>)}</div>}
+            {!fixedSizesOnly && mode === 'auto' && (
               <div className="flex h-full animate-fade-in items-center justify-center pt-8 pb-4 text-center">
                 <div>
                   <div className="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 text-blue-500 dark:bg-blue-500/10">
@@ -246,58 +257,16 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
               </div>
             )}
 
-            {mode === 'ratio' && (
+            {!fixedSizesOnly && mode === 'ratio' && (
               <div className="space-y-5 animate-fade-in">
-                <section>
+                {!compositionOnly && <section>
                   <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
                   <div className="grid grid-cols-3 gap-2">
-                    {TIERS.map((item) => {
-                      const disabled = codexCli && item !== '1K'
-                      return (
-                        <div
-                          key={item}
-                          className="relative"
-                          onMouseEnter={() => {
-                            if (tierHintTimerRef.current != null) window.clearTimeout(tierHintTimerRef.current)
-                            if (disabled) setTierHint(item)
-                          }}
-                          onMouseLeave={() => setTierHint(null)}
-                          onTouchStart={() => {
-                            if (!disabled) return
-                            if (tierHintTimerRef.current != null) window.clearTimeout(tierHintTimerRef.current)
-                            tierHintTimerRef.current = window.setTimeout(() => {
-                              setTierHint(item)
-                              tierHintTimerRef.current = null
-                            }, 450)
-                          }}
-                          onTouchEnd={() => {
-                            if (tierHintTimerRef.current != null) window.clearTimeout(tierHintTimerRef.current)
-                            tierHintTimerRef.current = window.setTimeout(() => {
-                              setTierHint(null)
-                              tierHintTimerRef.current = null
-                            }, 1500)
-                          }}
-                          onTouchCancel={() => {
-                            if (tierHintTimerRef.current != null) window.clearTimeout(tierHintTimerRef.current)
-                            tierHintTimerRef.current = null
-                            setTierHint(null)
-                          }}
-                        >
-                          <button
-                            className={`${buttonClass(tier === item)} w-full disabled:cursor-not-allowed disabled:opacity-40`}
-                            onClick={() => setTier(item)}
-                            disabled={disabled}
-                          >
-                            {item}
-                          </button>
-                          <ViewportTooltip visible={tierHint === item} className="w-52 text-center">
-                            Codex CLI 不支持 1K 以上的分辨率
-                          </ViewportTooltip>
-                        </div>
-                      )
-                    })}
+                    {TIERS.map((item) => (
+                      <button key={item} className={`${buttonClass(tier === item)} w-full`} onClick={() => setTier(item)}>{item}</button>
+                    ))}
                   </div>
-                </section>
+                </section>}
 
                 <section>
                   <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">图像比例</div>
@@ -349,7 +318,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
               </div>
             )}
 
-            {mode === 'resolution' && (
+            {!fixedSizesOnly && !compositionOnly && mode === 'resolution' && (
               <div className="space-y-5 animate-fade-in">
                 <section>
                   <div className="mb-4 text-xs font-medium text-gray-400 dark:text-gray-500">输入具体像素值</div>
@@ -397,7 +366,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             <div className="text-xs text-gray-400 dark:text-gray-500">将使用</div>
             <div className="mt-1 flex items-center gap-2">
               <span className="font-mono text-lg font-semibold text-gray-800 dark:text-gray-100">
-                {previewSize || '尺寸无效'}
+                {displaySize(previewSize) || '尺寸无效'}
               </span>
               {isClamped && (
                 <div
@@ -419,6 +388,8 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
               )}
             </div>
           </div>
+          {compositionOnly && <p className="text-xs text-gray-500">比例仅通过提示词引导，接口决定实际尺寸，不保证精确比例。</p>}
+          {!compositionOnly && !fixedSizesOnly && isExperimentalImageSize(previewSize) && <p className="text-xs text-amber-600">此分辨率超过常规像素范围，属于实验支持，实际输出以接口返回为准。</p>}
         </div>
 
         <div className="mt-5 flex gap-2">

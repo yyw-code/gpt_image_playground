@@ -18,7 +18,7 @@ import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashI
 import ViewportTooltip from './ViewportTooltip'
 import { CommentBadge } from './CommentMarks'
 
-/** 展示任务详情和解码原图的真实尺寸，提示明显的画幅偏差；Grok 使用独立分辨率和比例。 */
+/** 展示任务快照与原图尺寸、质量和可选复杂度；Grok 使用独立分辨率、比例及 2.0 质量。 */
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
@@ -984,7 +984,7 @@ export default function DetailModal() {
             )}
             <div className="grid grid-cols-2 gap-2 text-xs mb-4 min-w-0">
               <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
-                <span className="text-gray-400 dark:text-gray-500">{isGrok ? '分辨率' : '尺寸'}</span>
+                <span className="text-gray-400 dark:text-gray-500">{isGrok ? '分辨率档位' : '尺寸'}</span>
                 <br />
                 <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
                   {isGrok ? <span>{task.params.resolution?.toUpperCase() ?? '1K'}</span> : <DetailParamValue task={task} paramKey="size" className="font-medium" actualParams={currentActualParams} />}
@@ -997,6 +997,24 @@ export default function DetailModal() {
                   {isGrok ? <span>{task.params.aspect_ratio ?? '1:1'}</span> : <DetailParamValue task={task} paramKey="quality" className="font-medium" actualParams={currentActualParams} />}
                 </div>
               </div>
+              {isGrok && task.apiModel === 'grok-imagine-image-2.0' && (
+                <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
+                  <span className="text-gray-400 dark:text-gray-500">质量</span>
+                  <br />
+                  <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
+                    <DetailParamValue task={task} paramKey="quality" className="font-medium" actualParams={currentActualParams} />
+                  </div>
+                </div>
+              )}
+              {(task.params.complexity || currentActualParams?.complexity) && (
+                <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
+                  <span className="text-gray-400 dark:text-gray-500">构图复杂度</span>
+                  <br />
+                  <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
+                    <DetailParamValue task={task} paramKey="complexity" className="font-medium" actualParams={currentActualParams} />
+                  </div>
+                </div>
+              )}
               <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
                 <span className="text-gray-400 dark:text-gray-500">格式</span>
                 <br />
@@ -1038,7 +1056,7 @@ export default function DetailModal() {
               )}
               {!isAgentTask && (
                 <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
-                  <span className="text-gray-400 dark:text-gray-500">数量</span>
+                  <span className="text-gray-400 dark:text-gray-500">生成张数</span>
                   <br />
                   <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
                     <DetailParamValue task={task} paramKey="n" className="font-medium" />

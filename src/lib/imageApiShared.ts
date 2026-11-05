@@ -51,7 +51,20 @@ export function isDataUrl(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('data:')
 }
 
+/** 依据图片文件头识别原始格式；未知内容不把请求格式当成已核实的实际格式。 */
+export function getBase64ImageFormat(value: string): TaskParams['output_format'] | undefined {
+  const encoded = value.startsWith('data:') ? value.slice(value.indexOf(',') + 1) : value
+  if (encoded.startsWith('iVBORw0KGgo')) return 'png'
+  if (encoded.startsWith('/9j/')) return 'jpeg'
+  if (encoded.startsWith('UklGR') && /^[A-Za-z0-9+/]{16}/.test(encoded) && atob(encoded.slice(0, 16)).slice(8, 12) === 'WEBP') return 'webp'
+  return undefined
+}
+
+/** 用可识别的文件头修正 MIME；无法识别时保留接口 data URL 或调用方缺省格式。 */
 export function normalizeBase64Image(value: string, fallbackMime: string): string {
+  const format = getBase64ImageFormat(value)
+  const encoded = value.startsWith('data:') ? value.slice(value.indexOf(',') + 1) : value
+  if (format) return `data:${MIME_MAP[format]};base64,${encoded}`
   return value.startsWith('data:') ? value : `data:${fallbackMime};base64,${value}`
 }
 
@@ -222,12 +235,14 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   return errorMsg
 }
 
+/** 提取接口回显；已识别的图片文件格式优先于文字元数据，不伪造缺失的质量值。 */
 export function pickActualParams(source: unknown): Partial<TaskParams> {
   if (!source || typeof source !== 'object') return {}
   const record = source as Record<string, unknown>
   const actualParams: Partial<TaskParams> = {}
 
   if (typeof record.size === 'string') actualParams.size = record.size
+  if (record.complexity === 'low' || record.complexity === 'medium' || record.complexity === 'high') actualParams.complexity = record.complexity
   if (record.quality === 'auto' || record.quality === 'low' || record.quality === 'medium' || record.quality === 'high' || record.quality === 'xhigh' || record.quality === 'max') {
     actualParams.quality = record.quality
   }
@@ -237,6 +252,9 @@ export function pickActualParams(source: unknown): Partial<TaskParams> {
   if (typeof record.output_compression === 'number') actualParams.output_compression = record.output_compression
   if (record.moderation === 'auto' || record.moderation === 'low') actualParams.moderation = record.moderation
   if (typeof record.n === 'number') actualParams.n = record.n
+  const b64 = typeof record.b64_json === 'string' ? record.b64_json : getResponsesImageResultBase64(record.result as ResponsesOutputItem['result'])
+  const format = b64 ? getBase64ImageFormat(b64) : undefined
+  if (format) actualParams.output_format = format
 
   return actualParams
 }

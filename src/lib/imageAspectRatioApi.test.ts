@@ -102,7 +102,7 @@ describe('本站比例提示与原参数兼容', () => {
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
     expect(body.input).toBe(prompt)
     expect(body.instructions).toContain(`Append this composition instruction to every image prompt, including reference-image edits and batch items: "${composition}"`)
-    if (hybrid) expect(body.instructions).toContain('Generate at 2016x864 resolution.')
+    if (hybrid) expect(body.instructions).not.toContain('Generate at 2016x864 resolution.')
     else expect(body.tools[0]).toMatchObject({ size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80 })
   })
 
@@ -121,7 +121,7 @@ describe('本站比例提示与原参数兼容', () => {
     expect(result.image?.actualParams).toMatchObject({ size: '1915x821', quality: 'medium' })
   })
 
-  it('Codex 混合工具跳过旧像素前缀时仍附带比例，保留原有字段省略规则', async () => {
+  it('Codex 仅附带构图比例，不发送精确像素、质量或原生输出参数', async () => {
     mocks.siteMode.IS_SITE_MODE = false
     const fetchMock = mockImageResponse()
     const codexProfile = { ...profile, codexCli: true }
@@ -131,7 +131,9 @@ describe('本站比例提示与原参数兼容', () => {
     expect(body.prompt).toBe(`${prompt}\n\n${composition}`)
     expect(body.size).toBeUndefined()
     expect(body.quality).toBeUndefined()
-    expect(body.output_format).toBe('webp')
+    expect(body.output_format).toBeUndefined()
+    expect(body.output_compression).toBeUndefined()
+    expect(body.moderation).toBeUndefined()
   })
 
   it('请求失败时返回原错误，不偷偷降级参数或额外重试', async () => {

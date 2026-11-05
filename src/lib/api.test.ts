@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { createDefaultOpenAIProfile, DEFAULT_IMAGES_MODEL, DEFAULT_SETTINGS } from './apiProfiles'
+import { createDefaultOpenAIProfile, DEFAULT_IMAGES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { normalizePersistedState } from './persistedState'
 import { callImageApi } from './api'
 import { maybeAppendImageToolDroppedHint, maybeAppendStreamingHint } from './imageApiShared'
@@ -21,6 +21,53 @@ describe('API error hints', () => {
 })
 
 describe('callImageApi', () => {
+  it.each([false, true])('sends explicit 2.6 complexity and preserves image parameters for edit=%s', async (edit) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url).startsWith('data:')
+      ? new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'Content-Type': 'image/png' } })
+      : new Response(JSON.stringify({ complexity: 'medium', data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
+    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.6-flare', streamImages: false })
+    const result = await callImageApi({ settings: normalizeSettings({ profiles: [profile] }), prompt: 'cup', params: { ...DEFAULT_PARAMS, quality: 'max', complexity: 'low', size: '1536x864' }, inputImageDataUrls: edit ? ['data:image/png;base64,iVBORw0KGgo='] : [] })
+    const init = fetchMock.mock.calls.find(([url]) => String(url).includes(edit ? 'images/edits' : 'images/generations'))?.[1]
+    const body = edit ? Object.fromEntries((init?.body as FormData).entries()) : JSON.parse(String(init?.body))
+    expect(body).toMatchObject({ model: 'gpt-image-2.6-flare', complexity: 'low', quality: 'max', size: '1536x864' })
+    expect(result.actualParams?.complexity).toBe('medium')
+  })
+  it.each(['images', 'responses'] as const)('omits unsupported native fields for Codex and unknown models on %s', async (apiMode) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(apiMode === 'images'
+      ? { data: [{ b64_json: '/9j/4AAQSkZJRg==' }] }
+      : { output: [{ type: 'image_generation_call', result: '/9j/4AAQSkZJRg==' }] })))
+    for (const codexCli of [true, false]) {
+      const profile = createDefaultOpenAIProfile({ apiMode, codexCli, model: codexCli ? DEFAULT_IMAGES_MODEL : 'vendor-image', imageGenerationModel: codexCli ? DEFAULT_IMAGES_MODEL : 'vendor-image' })
+      const result = await callImageApi({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), prompt: 'cup', params: { ...DEFAULT_PARAMS, quality: 'max', size: '3840x2160', output_format: 'webp', output_compression: 70, moderation: 'low' }, inputImageDataUrls: [] })
+      const body = JSON.parse(String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[1]?.body))
+      const imageBody = apiMode === 'responses' ? body.tools[0] : body
+      for (const key of ['size', 'quality', 'output_format', 'output_compression', 'moderation']) expect(imageBody).not.toHaveProperty(key)
+      expect(result.actualParams?.output_format).toBe('jpeg')
+      expect(result.actualParams?.quality).toBeUndefined()
+      expect(result.images[0]).toContain('data:image/jpeg;')
+    }
+  })
+
+  it('omits unsupported multipart edit fields in Codex mode', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url).startsWith('data:')
+      ? new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'Content-Type': 'image/png' } })
+      : new Response(JSON.stringify({ data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
+    const profile = createDefaultOpenAIProfile({ codexCli: true })
+    await callImageApi({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), prompt: 'edit cup', params: { ...DEFAULT_PARAMS, quality: 'max', output_format: 'webp', output_compression: 70 }, inputImageDataUrls: ['data:image/png;base64,iVBORw0KGgo='] })
+    const body = fetchMock.mock.calls.find(([url]) => String(url).includes('images/edits'))?.[1]?.body as FormData
+    for (const key of ['size', 'quality', 'output_format', 'output_compression', 'moderation']) expect(body.has(key)).toBe(false)
+    expect(body.has('image[]')).toBe(true)
+  })
+
+  it('records a short native batch accurately without issuing replacement requests', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ n: 2, output_format: 'png', data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
+    const profile = createDefaultOpenAIProfile({ streamImages: false })
+    const result = await callImageApi({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), prompt: 'cup', params: { ...DEFAULT_PARAMS, n: 2 }, inputImageDataUrls: [] })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).n).toBe(2)
+    expect(result.images).toHaveLength(1)
+    expect(result.actualParams).toMatchObject({ n: 1, output_format: 'jpeg' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
@@ -328,7 +375,7 @@ describe('callImageApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.size).toBeUndefined()
-    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt\n\nComposition: 1:1 aspect ratio, square canvas.')
+    expect(body.prompt).toBe('prompt\n\nComposition: 1:1 aspect ratio, square canvas.')
   })
 
   it('does not add a size hint for auto in Codex CLI mode', async () => {
@@ -399,6 +446,7 @@ describe('callImageApi', () => {
       output_format: 'png',
       quality: 'medium',
       size: '1033x1522',
+      n: 1,
     })
     expect(result.actualParamsList).toEqual([{
       output_format: 'png',
@@ -428,6 +476,7 @@ describe('callImageApi', () => {
     expect(result.actualParams).toEqual({
       output_format: 'png',
       size: '1033x1522',
+      n: 1,
     })
     expect(result.actualParams?.quality).toBeUndefined()
     expect(result.actualParamsList).toEqual([{

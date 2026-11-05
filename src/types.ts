@@ -204,6 +204,8 @@ export interface TaskParams {
   aspect_ratio?: string
   size: string
   quality: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  /** GPT Image 2.6 原生 Images 构图规划强度；缺省时不发送，由接口决定。 */
+  complexity?: 'low' | 'medium' | 'high'
   output_format: 'png' | 'jpeg' | 'webp'
   output_compression: number | null
   moderation: 'auto' | 'low'

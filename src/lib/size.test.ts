@@ -1,5 +1,38 @@
 import { describe, expect, it } from 'vitest'
-import { appendImageAspectRatioPrompt, calculateImageSize, getImageAspectRatioInstruction, getImageAspectRatioWarning, normalizeCodexCliImageSize, prependCodexCliSizePrompt, stripInjectedCodexCliSizePrompt, stripInjectedImageAspectRatioPrompt } from './size'
+import { appendImageAspectRatioPrompt, calculateImageSize, getImageAspectRatioInstruction, getImageAspectRatioWarning, isExperimentalImageSize, normalizeCodexCliImageSize, normalizeModelImageSize, prependCodexCliSizePrompt, stripInjectedCodexCliSizePrompt, stripInjectedImageAspectRatioPrompt } from './size'
+
+describe('model size contracts', () => {
+  it('keeps only fixed native sizes for 1.5 and preserves auto', () => {
+    expect(normalizeModelImageSize('1536x1024', 'fixed')).toBe('1536x1024')
+    expect(normalizeModelImageSize('3840x2160', 'fixed')).toBe('auto')
+    expect(normalizeModelImageSize('auto', 'fixed')).toBe('auto')
+  })
+
+  it.each(['3840x1648', '1024x1024', '3840x2160'])('preserves valid custom dimensions %s', (size) => {
+    expect(normalizeModelImageSize(size, 'custom')).toBe(size)
+  })
+
+  it.each(['100x100', '8000x1000', '20000x20000', '1025x1025'])('normalizes geometry at the native boundary for %s', (size) => {
+    const [width, height] = normalizeModelImageSize(size, 'custom').split('x').map(Number)
+    expect(width % 16).toBe(0)
+    expect(height % 16).toBe(0)
+    expect(Math.max(width, height)).toBeLessThanOrEqual(3840)
+    expect(Math.max(width, height) / Math.min(width, height)).toBeLessThanOrEqual(3)
+    expect(width * height).toBeGreaterThanOrEqual(655360)
+    expect(width * height).toBeLessThanOrEqual(8294400)
+  })
+
+  it('marks experimental resolution without treating it as invalid', () => {
+    expect(isExperimentalImageSize('2560x1440')).toBe(false)
+    expect(isExperimentalImageSize('3840x1648')).toBe(true)
+    expect(isExperimentalImageSize('auto')).toBe(false)
+  })
+
+  it.each(['0x1024', 'invalid', `${'9'.repeat(310)}x1024`])('falls back to auto for invalid dimensions %s', (size) => {
+    expect(normalizeModelImageSize(size, 'custom')).toBe('auto')
+    expect(normalizeModelImageSize(size, 'composition')).toBe('auto')
+  })
+})
 
 describe('image aspect ratio compatibility', () => {
   it.each([

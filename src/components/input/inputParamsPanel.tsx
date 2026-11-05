@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiProfile, AppSettings, BatchProgress, BatchPromptMode, TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
-import { GROK_IMAGE_ASPECT_RATIOS } from '../../lib/grokImage'
+import { getGrokAspectRatios } from '../../lib/grokImage'
+import { getImageParameterCapabilities } from '../../lib/imageModels'
 import { isTauri } from '../../lib/platform'
 import { dismissAllTooltips } from '../../lib/tooltipDismiss'
 import Select from '../Select'
@@ -94,7 +95,7 @@ interface HintTooltipState {
   startTouch: () => void
 }
 
-/** 根据图片供应商展示可用参数，Grok 只显示原生分辨率、比例及数量。 */
+/** 根据供应商、模型和通道展示有效选项；生成张数与接口并发、Agent 自动数量分别说明。 */
 export default function InputParamsPanel({
   params,
   setParams,
@@ -201,8 +202,10 @@ export default function InputParamsPanel({
   onStopBatch: () => void
 }) {
   const isGrok = activeProfile.provider === 'grok'
+  const capabilities = getImageParameterCapabilities(activeProfile)
   // 折叠时也展示弹层内每一项的当前值，不支持的参数不显示
-  const moreSummary = isGrok ? '接口原始格式' : [
+  const moreSummary = !capabilities.nativeOutput ? '接口原始格式' : [
+    ...(capabilities.complexity ? [`复杂度 ${params.complexity ?? '默认'}`] : []),
     params.output_format.toUpperCase(),
     showTransparentOutputControl
       ? `透明 ${transparentOutputEnabled}`
@@ -237,16 +240,19 @@ export default function InputParamsPanel({
             value={params.resolution ?? '1k'}
             onChange={(value) => setParams({ resolution: value as TaskParams['resolution'] })}
             options={[{ label: '1K', value: '1k' }, { label: '2K', value: '2k' }]}
-            prefix={prefix('分辨率')}
+            prefix={prefix('分辨率档位')}
             className={CHIP_CLASS}
           />
           <Select
             value={params.aspect_ratio ?? '1:1'}
             onChange={(value) => setParams({ aspect_ratio: String(value) })}
-            options={GROK_IMAGE_ASPECT_RATIOS.map((value) => ({ label: value, value }))}
+            options={getGrokAspectRatios(activeProfile.model).map((value) => ({ label: value === 'auto' ? '自动' : value, value }))}
             prefix={prefix('比例')}
             className={CHIP_CLASS}
           />
+          {capabilities.qualities.length > 1 && (
+            <Select value={params.quality} onChange={(value) => setParams({ quality: value as TaskParams['quality'] })} options={capabilities.qualities.map((value) => ({ label: value, value }))} prefix={prefix('质量')} className={CHIP_CLASS} />
+          )}
         </>
       ) : (
         <>
@@ -262,16 +268,17 @@ export default function InputParamsPanel({
             <button
               type="button"
               onClick={() => { dismissAllTooltips(); onOpenSizePicker() }}
+              disabled={capabilities.sizeMode === 'auto'}
               className={`flex w-full items-center ${CHIP_CLASS}`}
             >
-              {prefix('尺寸')}
+              {prefix(capabilities.sizeMode === 'composition' ? '构图比例' : '尺寸')}
               <span className="font-mono">{displaySize}</span>
             </button>
             <ButtonTooltip
               visible={(isFalTextToImage || activeProfile.codexCli) && sizeHint.visible}
               text={isFalTextToImage
                 ? <>fal.ai 的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>
-                : 'Codex CLI 不支持尺寸参数，此处设置仅基于提示词工程'}
+                : '构图比例仅通过提示词引导，接口决定实际像素尺寸，不保证精确比例'}
             />
           </div>
           <div
@@ -284,13 +291,13 @@ export default function InputParamsPanel({
             onClick={qualityHint.show}
           >
             <Select
-              value={activeProfile.codexCli ? 'auto' : isFalProvider && params.quality === 'auto' ? 'high' : params.quality}
+              value={capabilities.qualities.length === 1 ? 'auto' : isFalProvider && params.quality === 'auto' ? 'high' : params.quality}
               onChange={(val) => {
-                if (!activeProfile.codexCli) setParams({ quality: val as TaskParams['quality'] })
+                if (capabilities.qualities.length > 1) setParams({ quality: val as TaskParams['quality'] })
               }}
               options={qualityOptions}
-              disabled={activeProfile.codexCli}
-              prefix={prefix('质量')}
+              disabled={capabilities.qualities.length === 1}
+              prefix={prefix(capabilities.qualities.length === 1 ? '质量（接口自动）' : '质量')}
               menuClassName="min-w-max"
               className={activeProfile.codexCli ? CHIP_DISABLED_CLASS : CHIP_CLASS}
             />
@@ -314,7 +321,7 @@ export default function InputParamsPanel({
         }}
         onClick={() => { showAgentNHint(); streamConcurrentHint.show() }}
       >
-        {prefix('数量')}
+        {prefix('生成张数')}
         <input
           value={nInput}
           onChange={(e) => handleNInputChange(e.target.value)}
@@ -341,13 +348,36 @@ export default function InputParamsPanel({
           className="bg-transparent text-xs focus:outline-none disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
         <ButtonTooltip visible={nLimitHint.visible} text={nLimitHintText} />
-        <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text="数量大于 1 时会将多图生成拆分为并发单图" />
+        <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text={isGrok ? '目标张数拆为独立单图请求，最多同时生成 2 张；保留部分成功，不自动补图' : '目标张数拆为独立单图请求；张数不是并发限制，实际成功张数以结果为准'} />
       </label>
       <ParamPopoverChip label="更多" summary={moreSummary} className="sm:min-w-[5rem]">
-        {isGrok ? (
-          <p className="text-gray-500">图片使用接口原始格式，最多 3 张参考图；暂不支持遮罩与背景处理。</p>
+        {!capabilities.nativeOutput ? (
+          <>
+            <p className="text-gray-500">{isGrok
+              ? '1K/2K 为分辨率档位，实际像素和图片格式以接口返回为准；最多 3 张参考图，不支持遮罩与背景处理。'
+              : capabilities.sizeMode === 'composition' ? '图片质量、像素尺寸和格式由接口决定，构图比例仅作提示词引导。' : '当前图片模型的参数能力尚未确认，使用接口默认质量、尺寸和格式。'}</p>
+            {isGrok && activeProfile.model === 'grok-imagine-image-2.0' && <p className="mt-2 text-gray-500">auto 当前在生图时选择 low、编辑时选择 medium，费用随实际档位变化。</p>}
+            {isGrok && activeProfile.model === 'grok-imagine-image-quality' && <p className="mt-2 text-gray-500">官方已将此旧名称迁移至 2.0 low，不代表更高质量。</p>}
+            {!isGrok && showTransparentOutputControl && <label className={ROW_CLASS}><span>本地去背景</span><input type="checkbox" checked={transparentOutputEnabled} onChange={(event) => setParams({ transparent_output: event.target.checked })} /></label>}
+          </>
         ) : (
           <>
+            {capabilities.complexity && (
+              <div>
+                <div className={ROW_CLASS}>
+                  <span className={ROW_LABEL_CLASS}>构图复杂度</span>
+                  <div className="w-28">
+                    <Select
+                      value={params.complexity ?? ''}
+                      onChange={(value) => setParams({ complexity: value ? value as TaskParams['complexity'] : undefined })}
+                      options={[{ label: '接口默认', value: '' }, ...['low', 'medium', 'high'].map((value) => ({ label: value, value }))]}
+                      className={selectClass}
+                    />
+                  </div>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">控制构图规划，与画质分开；接口默认 high，简单编辑可选择 low 以减少等待。</p>
+              </div>
+            )}
             <div className={ROW_CLASS}>
               <span className={ROW_LABEL_CLASS}>格式</span>
               <div className="w-28">
@@ -404,7 +434,7 @@ export default function InputParamsPanel({
                 />
               </div>
             )}
-            {!showTransparentOutputControl && (
+            {!compressionDisabled && (
               <label
                 className={ROW_CLASS}
                 onMouseEnter={compressionHint.show}

@@ -209,7 +209,7 @@ describe('callAgentResponsesApi', () => {
     expect(body.tools[0].input_image_mask).toEqual({ image_url: 'data:image/png;base64,bWFzaw==' })
   })
 
-  it('requires resolution in Agent prompts and omits the Codex CLI size parameter', async () => {
+  it('uses composition guidance and omits native parameters for Codex Agent tools', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output: [{ type: 'message', content: [{ type: 'output_text', text: 'OK' }] }],
     }), {
@@ -232,7 +232,11 @@ describe('callAgentResponsesApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.tools[0].size).toBeUndefined()
-    expect(body.instructions).toContain('Start every image prompt with exactly "Generate at 1024x1024 resolution." followed by a space.')
+    expect(body.tools[0].quality).toBeUndefined()
+    expect(body.tools[0].output_format).toBeUndefined()
+    expect(body.tools[0].moderation).toBeUndefined()
+    expect(body.instructions).toContain('Composition: 1:1 aspect ratio, square canvas.')
+    expect(body.instructions).not.toContain('1024x1024 resolution')
   })
 
   it('extracts image_generation results from base64 object fields', async () => {

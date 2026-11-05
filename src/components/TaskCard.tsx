@@ -60,7 +60,7 @@ function TaskActionButton({
   )
 }
 
-/** 展示任务结果及供应商原生参数，保留历史任务操作入口。 */
+/** 展示任务结果、供应商原生参数及可选构图复杂度，保留历史任务操作入口。 */
 export default function TaskCard({
   task,
   onReuse,
@@ -312,13 +312,14 @@ export default function TaskCard({
 
   const isGrok = task.apiProvider === 'grok'
   const qualityDisplay = getParamDisplay(task, 'quality')
-  const showQuality = !isGrok && (task.params.quality !== 'auto' || qualityDisplay.isMismatch)
+  const complexityDisplay = getParamDisplay(task, 'complexity')
+  const showQuality = (!isGrok || task.apiModel === 'grok-imagine-image-2.0') && (task.params.quality !== 'auto' || qualityDisplay.isMismatch)
 
   const sizeDisplay = getParamDisplay(task, 'size')
   const showSize = task.params.size !== 'auto' || sizeDisplay.isMismatch
 
   const formatDisplay = getParamDisplay(task, 'output_format')
-  const showFormat = task.params.output_format !== 'png' || formatDisplay.isMismatch
+  const showFormat = isGrok ? Boolean(task.actualParams?.output_format) : task.params.output_format !== 'png' || formatDisplay.isMismatch
   const showTransparentOutput = task.transparentOutput || task.params.transparent_output
 
   const nDisplay = getParamDisplay(task, 'n')
@@ -614,6 +615,12 @@ export default function TaskCard({
                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
                   <span className="text-gray-400 dark:text-gray-500">质量</span>
                   {qualityDisplay.isMismatch ? <ActualValueBadge value={qualityDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{qualityDisplay.displayValue}</span>}
+                </span>
+              )}
+              {(task.params.complexity || task.actualParams?.complexity) && (
+                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
+                  <span className="text-gray-400 dark:text-gray-500">复杂度</span>
+                  {complexityDisplay.isMismatch ? <ActualValueBadge value={complexityDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{complexityDisplay.displayValue}</span>}
                 </span>
               )}
               {isGrok && (
