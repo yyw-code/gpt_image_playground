@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDefaultOpenAIProfile } from '../../lib/apiProfiles'
-import { fetchApiModels } from '../../lib/apiModels'
+import { fetchApiModels, type ApiModelCatalog } from '../../lib/apiModels'
 import type { ApiProfile } from '../../types'
 import ApiModelFields from './ApiModelFields'
 
@@ -36,24 +36,29 @@ function renderFields() {
 }
 
 describe('当前配置的模型查询状态', () => {
-  it('仅在用户点击时查询，成功不覆盖模型或空工具模型，两个选择器共享候选', async () => {
-    fetchMock.mockResolvedValue(['text-discovered', 'image-discovered'])
+  it('仅在点击时查询，文本与图像工具候选独立，成功不覆盖保存值', async () => {
+    fetchMock.mockResolvedValue({ text: ['text-discovered'], image: ['image-discovered'], unknown: [] })
     const p = renderFields()
     expect(fetchMock).not.toHaveBeenCalled()
     await act(async () => p.container.querySelector('button')!.click())
     expect(fetchMock).toHaveBeenCalledWith(profile, expect.any(AbortSignal))
-    expect(p.container.textContent).toContain('已获取 2 个模型')
+    expect(p.container.textContent).toContain('已获取 1 个文本模型、1 个图像工具模型')
     for (const label of ['文本模型 ID', '图像工具模型']) {
       act(() => p.container.querySelector<HTMLButtonElement>(`[aria-label="选择${label}"]`)!.click())
     }
-    expect(p.container.querySelectorAll('[role="option"]')).toHaveLength(6)
+    const lists = p.container.querySelectorAll('[role="listbox"]')
+    expect(lists[0].textContent).toContain('text-discovered')
+    expect(lists[0].textContent).not.toContain('image-discovered')
+    expect(lists[1].textContent).toContain('image-discovered')
+    expect(lists[1].textContent).not.toContain('text-discovered')
+    expect(p.container.querySelectorAll('[role="option"]')).toHaveLength(4)
     expect(p.container.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe('saved-model')
     expect(p.change).not.toHaveBeenCalled()
     expect(p.commit).not.toHaveBeenCalled()
   })
 
   it.each(['id', 'apiKey', 'baseUrl', 'apiProxy'] as const)('改变 %s 后取消旧请求，迟到结果不污染新配置', async (field) => {
-    let finish!: (models: string[]) => void
+    let finish!: (models: ApiModelCatalog) => void
     fetchMock.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
     const p = renderFields()
     act(() => p.container.querySelector('button')!.click())
@@ -61,7 +66,7 @@ describe('当前配置的模型查询状态', () => {
     const next: ApiProfile = { ...profile, [field]: field === 'apiProxy' ? !profile.apiProxy : 'changed-fixture' }
     p.render(next)
     expect(signal.aborted).toBe(true)
-    await act(async () => finish(['old-model-discovered']))
+    await act(async () => finish({ text: ['old-model-discovered'], image: [], unknown: [] }))
     expect(p.container.textContent).not.toContain('已获取')
     act(() => p.container.querySelector<HTMLButtonElement>('[aria-label="选择文本模型 ID"]')!.click())
     expect(p.container.textContent).not.toContain('old-model-discovered')
@@ -70,15 +75,15 @@ describe('当前配置的模型查询状态', () => {
 
   it('空列表、失败和重试均保留旧值，错误状态允许重新获取', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    fetchMock.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('模型查询被拒绝')).mockResolvedValueOnce(['retry-model'])
+    fetchMock.mockResolvedValueOnce({ text: [], image: [], unknown: [] }).mockRejectedValueOnce(new Error('模型查询被拒绝')).mockResolvedValueOnce({ text: ['retry-model'], image: [], unknown: [] })
     const p = renderFields()
     await act(async () => p.container.querySelector('button')!.click())
-    expect(p.container.textContent).toContain('接口未返回模型')
+    expect(p.container.textContent).toContain('没有对应候选')
     await act(async () => p.container.querySelector('button')!.click())
     expect(p.container.textContent).toContain('模型查询被拒绝')
     expect(p.container.querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe('saved-model')
     await act(async () => p.container.querySelector('button')!.click())
-    expect(p.container.textContent).toContain('已获取 1 个模型')
+    expect(p.container.textContent).toContain('已获取 1 个文本模型')
     expect(p.commit).not.toHaveBeenCalled()
   })
 
@@ -118,5 +123,18 @@ describe('当前配置的模型查询状态', () => {
     expect(p.container.querySelector('button')).toBeNull()
     expect(p.container.querySelector('input')).not.toBeNull()
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('Images 模式只列图片候选，用途未知模型只提示手动输入', async () => {
+    fetchMock.mockResolvedValue({ text: ['text-discovered'], image: ['image-discovered'], unknown: ['unknown-discovered'] })
+    const p = renderFields()
+    p.render({ ...profile, apiMode: 'images' })
+    await act(async () => p.container.querySelector('button')!.click())
+    act(() => p.container.querySelector<HTMLButtonElement>('[aria-label="选择图片模型 ID"]')!.click())
+    const list = p.container.querySelector('[role="listbox"]')!
+    expect(list.textContent).toContain('image-discovered')
+    expect(list.textContent).not.toContain('text-discovered')
+    expect(list.textContent).not.toContain('unknown-discovered')
+    expect(p.container.textContent).toContain('1 个模型用途未知')
   })
 })

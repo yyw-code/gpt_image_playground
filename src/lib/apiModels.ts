@@ -3,8 +3,25 @@ import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devP
 import { apiFetch } from './platform'
 import { getSiteProfileError } from './siteProfiles'
 
-/** 使用当前配置的个人 Key 查询模型；只返回模型 ID，不推断接口或工具能力，不记录密钥。 */
-export async function fetchApiModels(profile: ApiProfile, signal?: AbortSignal): Promise<string[]> {
+export interface ApiModelCatalog {
+  text: string[]
+  image: string[]
+  unknown: string[]
+}
+
+/** 优先读取明确的类型字段，缺少类型时仅识别已知模型系列；不把未知或其他用途归入文本。 */
+export function getApiModelPurpose(model: { id: string; type?: unknown }): keyof ApiModelCatalog | 'other' {
+  if (model.type === 'image' || model.type === 'text') return model.type
+  if (typeof model.type === 'string' && ['embedding', 'audio', 'video', 'moderation'].includes(model.type)) return 'other'
+  const id = model.id.toLowerCase()
+  if (/(?:^|\/)(?:gpt-image-|dall-e-|grok-imagine-image(?:-|$)|gemini-.*-image(?:-|$))/.test(id)) return 'image'
+  if (/(?:embedding|whisper|tts|audio|realtime|transcribe|moderation|video)/.test(id)) return 'other'
+  if (/(?:^|\/)(?:gpt-\d|chatgpt-\d|o\d(?:-|$)|claude-|gemini-|grok-\d)/.test(id)) return 'text'
+  return 'unknown'
+}
+
+/** 使用当前个人 Key 获取按用途分类的模型候选；分类不代表接口或工具能力保证，不记录密钥。 */
+export async function fetchApiModels(profile: ApiProfile, signal?: AbortSignal): Promise<ApiModelCatalog> {
   const siteError = getSiteProfileError(profile)
   if (siteError) throw new Error(siteError)
   if (profile.provider !== 'openai') throw new Error('当前供应商不支持此模型查询')
@@ -64,12 +81,17 @@ export async function fetchApiModels(profile: ApiProfile, signal?: AbortSignal):
     if (!body || typeof body !== 'object' || !('data' in body) || !Array.isArray(body.data)) {
       throw new Error('模型列表格式异常，仍可手动填写模型 ID')
     }
-    const models = [...new Set(body.data.flatMap((item: unknown) => {
-      if (!item || typeof item !== 'object' || !('id' in item) || typeof item.id !== 'string') return []
+    const models: ApiModelCatalog = { text: [], image: [], unknown: [] }
+    const seen = new Set<string>()
+    for (const item of body.data) {
+      if (!item || typeof item !== 'object' || !('id' in item) || typeof item.id !== 'string') continue
       const id = item.id.trim()
-      return id ? [id] : []
-    }))]
-    if (body.data.length > 0 && models.length === 0) throw new Error('模型列表缺少有效模型 ID，仍可手动填写')
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      const purpose = getApiModelPurpose({ id, type: 'type' in item ? item.type : undefined })
+      if (purpose !== 'other') models[purpose].push(id)
+    }
+    if (body.data.length > 0 && seen.size === 0) throw new Error('模型列表缺少有效模型 ID，仍可手动填写')
     return models
   } finally {
     clearTimeout(timer)

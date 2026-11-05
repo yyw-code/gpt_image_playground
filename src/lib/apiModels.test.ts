@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDefaultOpenAIProfile } from './apiProfiles'
-import { fetchApiModels } from './apiModels'
+import { fetchApiModels, getApiModelPurpose } from './apiModels'
 import { setSiteConnection } from './siteProfiles'
 
 const mocks = vi.hoisted(() => ({ siteMode: { IS_SITE_MODE: false } }))
@@ -28,7 +28,7 @@ afterEach(() => {
 describe('个人 Key 模型查询', () => {
   it('只通过鉴权 GET 获取模型，去重清洗 ID，不传登录信息或发送生成请求', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ data: [{ id: ' text-a ' }, { id: 'image-b' }, { id: 'text-a' }, null, { id: 12 }, { id: ' ' }] })))
-    await expect(fetchApiModels(profile)).resolves.toEqual(['text-a', 'image-b'])
+    await expect(fetchApiModels(profile)).resolves.toEqual({ text: [], image: [], unknown: ['text-a', 'image-b'] })
     expect(fetchMock).toHaveBeenCalledOnce()
     expect(fetchMock).toHaveBeenCalledWith('https://site.example/v1/models', expect.objectContaining({
       method: 'GET', headers: { Authorization: 'Bearer fixture-key' }, credentials: 'omit', cache: 'no-store', redirect: 'error',
@@ -39,7 +39,7 @@ describe('个人 Key 模型查询', () => {
   it('沿用实际代理路径，包括允许隐藏 API 地址的代理配置', async () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
     fetchMock.mockResolvedValue(new Response('{"data":[]}'))
-    await expect(fetchApiModels({ ...profile, apiProxy: true, baseUrl: '' })).resolves.toEqual([])
+    await expect(fetchApiModels({ ...profile, apiProxy: true, baseUrl: '' })).resolves.toEqual({ text: [], image: [], unknown: [] })
     expect(fetchMock.mock.calls[0][0]).toBe('/api-proxy/models')
   })
 
@@ -121,5 +121,30 @@ describe('个人 Key 模型查询', () => {
     await vi.advanceTimersByTimeAsync(15000)
     await assertion
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('区分图片、文本、其他用途及未知模型，优先使用明确类型', async () => {
+    const data = [
+      { id: 'gpt-6.1-sol' }, { id: 'gpt-image-2.5-sunburst' },
+      { id: 'gpt-4o-audio-preview' }, { id: 'text-embedding-3-small' },
+      { id: 'unknown-vendor' }, { id: 'vendor-image', type: 'image' },
+      { id: 'gpt-image-alias', type: 'text' }, { id: 'gpt-6-video', type: 'video' },
+      { id: 'gpt-6.1-sol' },
+    ]
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ data })))
+    await expect(fetchApiModels(profile)).resolves.toEqual({
+      text: ['gpt-6.1-sol', 'gpt-image-alias'],
+      image: ['gpt-image-2.5-sunburst', 'vendor-image'], unknown: ['unknown-vendor'],
+    })
+  })
+
+  it.each([
+    ['grok-imagine-image-2.0', 'image'], ['vendor/gpt-image-2', 'image'],
+    ['dall-e-3', 'image'], ['grok-imagine-video', 'other'],
+    ['gpt-4o-transcribe', 'other'], ['omni-moderation-latest', 'other'],
+    ['claude-sonnet-4-5', 'text'], ['gemini-2.5-pro', 'text'],
+    ['o3', 'text'], ['grok-4', 'text'], ['image-unknown', 'unknown'],
+  ])('按已知用途识别 %s', (id, purpose) => {
+    expect(getApiModelPurpose({ id })).toBe(purpose)
   })
 })

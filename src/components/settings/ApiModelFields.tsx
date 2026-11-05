@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ApiProfile } from '../../types'
 import { DEFAULT_FAL_MODEL, DEFAULT_IMAGES_MODEL, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS } from '../../lib/apiProfiles'
-import { fetchApiModels } from '../../lib/apiModels'
+import { fetchApiModels, type ApiModelCatalog } from '../../lib/apiModels'
 import { IS_SITE_MODE } from '../../lib/siteMode'
 import ModelPicker from './ModelPicker'
 
@@ -15,16 +15,18 @@ interface ApiModelFieldsProps {
   onCommit: (patch: Partial<ApiProfile>) => void
 }
 
-/** 以紧凑文字入口展示模型获取及禁用原因；连接变化隔离旧结果，查询不修改已存模型。 */
+/** 按文本与图片用途展示候选；连接变化隔离旧结果，查询不修改已存模型或手动值。 */
 export default function ApiModelFields({ profile, locked, customProviderName, purpose, showImageTool = true, onChange, onCommit }: ApiModelFieldsProps) {
   const modelStatusId = useId()
   // 用连接身份隔离异步结果；不把 Key 拼成 DOM 标识或写入候选缓存。
   const connection = useMemo(() => ({}), [profile.id, profile.provider, profile.baseUrl, profile.apiKey, profile.apiProxy])
   const request = useRef<AbortController | null>(null)
-  const [result, setResult] = useState<{ connection: object; models: string[]; status: 'loading' | 'ready' | 'error'; error?: string } | null>(null)
+  const [result, setResult] = useState<{ connection: object; models: ApiModelCatalog; status: 'loading' | 'ready' | 'error'; error?: string } | null>(null)
   const current = result?.connection === connection ? result : null
-  const models = current?.models ?? []
   const mode = profile.apiMode ?? DEFAULT_SETTINGS.apiMode
+  const text = mode === 'responses' || purpose === 'text'
+  const models = current?.models[text ? 'text' : 'image'] ?? []
+  const imageModels = current?.models.image ?? []
   const openai = profile.provider === 'openai'
 
   useEffect(() => () => request.current?.abort(), [connection])
@@ -34,14 +36,14 @@ export default function ApiModelFields({ profile, locked, customProviderName, pu
     request.current?.abort()
     const controller = new AbortController()
     request.current = controller
-    setResult({ connection, models: [], status: 'loading' })
+    setResult({ connection, models: { text: [], image: [], unknown: [] }, status: 'loading' })
     try {
       const fetched = await fetchApiModels(profile, controller.signal)
       if (!controller.signal.aborted && request.current === controller) setResult({ connection, models: fetched, status: 'ready' })
     } catch (error) {
       if (controller.signal.aborted || request.current !== controller) return
       console.warn('模型列表查询失败')
-      setResult({ connection, models: [], status: 'error', error: error instanceof Error ? error.message : '模型查询失败，请重试或手动输入' })
+      setResult({ connection, models: { text: [], image: [], unknown: [] }, status: 'error', error: error instanceof Error ? error.message : '模型查询失败，请重试或手动输入' })
     }
   }
 
@@ -63,7 +65,7 @@ export default function ApiModelFields({ profile, locked, customProviderName, pu
               : !profile.apiKey.trim() ? '请先填写上方个人 API Key，填写后即可点击“获取模型”。也可直接手动输入模型 ID。'
               : current?.status === 'loading' ? '正在查询当前配置的模型列表，请稍候。'
               : current?.status === 'error' ? current.error
-              : current?.status === 'ready' ? models.length ? `已获取 ${models.length} 个模型。` : '接口未返回模型，可手动填写。'
+              : current?.status === 'ready' ? `已获取 ${models.length} 个${text ? '文本' : '图片'}模型${text && showImageTool ? `、${imageModels.length} 个图像工具模型` : ''}。${models.length ? '' : '没有对应候选，可手动填写。'}${current.models.unknown.length ? `另有 ${current.models.unknown.length} 个模型用途未知，可手动填写。` : ''}`
               : '使用当前配置的个人 API Key 获取模型。'}
             {' '}候选列表不保证模型支持所选接口或 image_generation 工具。
           </div>
@@ -73,7 +75,7 @@ export default function ApiModelFields({ profile, locked, customProviderName, pu
         {openai ? (
           <ModelPicker
             key={`model-${profile.id}`}
-            label={mode === 'responses' || purpose === 'text' ? '文本模型 ID' : '图片模型 ID'}
+            label={text ? '文本模型 ID' : '图片模型 ID'}
             value={profile.model}
             models={models}
             placeholder={mode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL}
@@ -120,7 +122,7 @@ export default function ApiModelFields({ profile, locked, customProviderName, pu
             key={`tool-${profile.id}`}
             label="图像工具模型"
             value={profile.imageGenerationModel ?? ''}
-            models={models}
+            models={imageModels}
             placeholder="使用接口默认值"
             disabled={locked}
             allowDefault
