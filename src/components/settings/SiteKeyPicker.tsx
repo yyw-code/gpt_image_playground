@@ -8,7 +8,7 @@ interface SiteKeyPickerProps {
   onSelect: (apiKey: string) => void
 }
 
-/** 读取同源主站的本人密钥并按名称选择；列表只驻留内存，账号变化或配置切换时丢弃。 */
+/** 读取同源主站的本人密钥，只展示当前类型下可选的候选；列表仅驻留内存，账号或配置变化时丢弃。 */
 export default function SiteKeyPicker({ profile, onSelect }: SiteKeyPickerProps) {
   const [session, setSession] = useState(readSiteSessionToken)
   const [result, setResult] = useState<{ connection: object; token: string; data: SiteKeyPage } | null>(null)
@@ -18,7 +18,8 @@ export default function SiteKeyPicker({ profile, onSelect }: SiteKeyPickerProps)
   const request = useRef<AbortController | null>(null)
   const connection = useMemo(() => ({}), [profile.id, profile.provider, profile.baseUrl, profile.apiProxy, session])
   const current = result?.connection === connection && result.token === readSiteSessionToken() ? result.data : null
-  const selected = current?.items.find((item) => item.key === profile.apiKey.trim())
+  const availableKeys = current?.items.filter((item) => !getSiteKeyUnavailableReason(item, profile.provider)) ?? []
+  const selected = availableKeys.find((item) => item.key === profile.apiKey.trim())
 
   useEffect(() => {
     /** 主站退出或切换账号后清理候选；同源父页面的存储变化会通知工作台 iframe。 */
@@ -82,6 +83,7 @@ export default function SiteKeyPicker({ profile, onSelect }: SiteKeyPickerProps)
 
   if (!IS_SITE_MODE || !['openai', 'grok'].includes(profile.provider)) return null
   const accessError = getSiteKeyAccessError(profile)
+  const typeLabel = profile.provider === 'grok' ? 'Grok' : 'ChatGPT'
 
   return (
     <div className="mt-2 space-y-2 text-xs">
@@ -94,15 +96,17 @@ export default function SiteKeyPicker({ profile, onSelect }: SiteKeyPickerProps)
       {open && <div className="rounded-xl border border-gray-200 p-3 dark:border-white/[0.1]">
         <div className="mb-2 flex items-center justify-between gap-2"><span>选择个人密钥</span><button type="button" onClick={() => setOpen(false)} className="text-gray-500">收起密钥列表</button></div>
         {current && !loading && <>
-          {current.items.length === 0 && <p className="text-gray-500">暂无个人密钥，请先在主站创建。</p>}
+          {availableKeys.length === 0 && <p className="text-gray-500">{current.pages > 1
+            ? `本页暂无可用的 ${typeLabel} 密钥，请翻页查看。`
+            : current.items.length === 0 ? '暂无个人密钥，请先在主站创建。'
+            : `暂无可用的 ${typeLabel} 密钥，请在主站查看或创建对应分组的密钥。`}</p>}
           <ul aria-label="本人密钥列表" className="max-h-56 space-y-1 overflow-y-auto">
-            {current.items.map((item) => {
-              const reason = getSiteKeyUnavailableReason(item, profile.provider)
-              return <li key={item.id}><button type="button" disabled={Boolean(reason)} onClick={() => selectKey(item)} className="w-full rounded-lg px-2 py-2 text-left hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.06]">
+            {availableKeys.map((item) => (
+              <li key={item.id}><button type="button" onClick={() => selectKey(item)} className="w-full rounded-lg px-2 py-2 text-left hover:bg-blue-50 dark:hover:bg-white/[0.06]">
                 <span className="block font-medium text-gray-700 dark:text-gray-200">{item.name}</span>
-                <span className="text-gray-500">{item.groupName} · {reason || '可用'} · {item.key.length > 4 ? `…${item.key.slice(-4)}` : '已隐藏'}</span>
+                <span className="text-gray-500">{item.groupName} · 可用 · {item.key.length > 4 ? `…${item.key.slice(-4)}` : '已隐藏'}</span>
               </button></li>
-            })}
+            ))}
           </ul>
           {current.pages > 1 && <div className="mt-2 flex items-center justify-between gap-2">
             <button type="button" disabled={current.page <= 1} onClick={() => void loadKeys(current.page - 1)} className="text-blue-600 disabled:opacity-40">上一页密钥</button>

@@ -140,7 +140,7 @@ describe('配置页的生图类型选择', () => {
       providerDrafts: { openai: { ...profile, apiMode: 'responses', model: 'text-model', imageGenerationModel: 'gpt-image-2.6-sunburst' } },
     }] })
     const container = renderSettings()
-    chooseProvider(container, 'OpenAI 兼容接口')
+    chooseProvider(container, 'ChatGPT')
     expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.6-sunburst' })
     expect(field(container, 'API 接口').textContent).toContain('直接生图（Images API）')
   })
@@ -236,12 +236,14 @@ describe('配置页的生图类型选择', () => {
     expect((mocks.state.settings as AppSettings).agentProfiles).toEqual(before.agentProfiles)
   })
 
-  it('站点模式只开放 OpenAI 和 Grok，连接继续只读', () => {
+  it('站点模式以 ChatGPT 和 Grok 展示生图类型，连接继续只读', () => {
     const container = renderSettings()
     const control = field(container, '生图类型')
     act(() => control.querySelector<HTMLElement>('.cursor-pointer')!.click())
-    expect(control.textContent).toContain('Grok（Sub2API）')
-    expect(control.textContent).toContain('OpenAI 兼容接口')
+    expect(control.textContent).toContain('Grok')
+    expect(control.textContent).toContain('ChatGPT')
+    expect(control.textContent).not.toContain('兼容接口')
+    expect(control.textContent).not.toContain('Sub2API')
     for (const hidden of ['fal.ai', 'sub2api（异步）', '创建自定义服务商']) expect(control.textContent).not.toContain(hidden)
     expect(field(container, 'API URL').querySelector('input')).toMatchObject({ readOnly: true, value: site.baseUrl })
     expect(container.querySelector('[aria-label="API 代理"]')).toBeNull()
@@ -251,10 +253,10 @@ describe('配置页的生图类型选择', () => {
     const settings = mocks.state.settings as AppSettings
     settings.profiles[0].providerDrafts = { grok: { baseUrl: 'https://foreign.example/v1', apiProxy: false, model: 'grok-imagine-image-2.0' } }
     const container = renderSettings()
-    chooseProvider(container, 'Grok（Sub2API）')
+    chooseProvider(container, 'Grok')
     const saved = mocks.state.settings as AppSettings
     expect(saved.profiles[0]).toMatchObject({ id: site.id, provider: 'grok', baseUrl: site.baseUrl, apiProxy: true, apiKey: '', model: 'grok-imagine-image-2.0', apiMode: 'images', codexCli: false, streamImages: false })
-    expect(field(container, '生图类型').textContent).toContain('Grok（Sub2API）')
+    expect(field(container, '生图类型').textContent).toContain('Grok')
     expect(field(container, 'API URL').querySelector('input')?.value).toBe(site.baseUrl)
     const restored = normalizeSettings(enforcePresetConfigPolicy(normalizeSettings(JSON.parse(JSON.stringify(saved)))))
     expect(restored.activeProfileId).toBe(site.id)
@@ -268,8 +270,8 @@ describe('配置页的生图类型选择', () => {
 
   it('切回 OpenAI 恢复原有模型和接口，本站连接不受草稿影响', () => {
     const container = renderSettings()
-    chooseProvider(container, 'Grok（Sub2API）')
-    chooseProvider(container, 'OpenAI 兼容接口')
+    chooseProvider(container, 'Grok')
+    chooseProvider(container, 'ChatGPT')
     expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ provider: 'openai', baseUrl: site.baseUrl, apiProxy: true, model: 'saved-openai-model', apiMode: 'images', apiKey: '' })
   })
 

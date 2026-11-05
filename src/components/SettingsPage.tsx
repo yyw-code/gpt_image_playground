@@ -165,7 +165,7 @@ function isProfileApiProxyEligible(settings: AppSettings, profile: ApiProfile) {
   return !isAsyncCustomProvider(customProvider)
 }
 
-/** 管理画廊、Agent 及通用设置，支持按名称选择本站密钥；返回时保存草稿。 */
+/** 管理画廊、Agent 及通用设置，生图类型简化展示为 ChatGPT/Grok，支持按名称选择本站密钥；返回时保存草稿。 */
 export default function SettingsPage() {
   const showSettings = useStore((s) => s.showSettings)
   const settingsTabRequest = useStore((s) => s.settingsTabRequest)
@@ -279,8 +279,8 @@ export default function SettingsPage() {
   ]
 
   const providerOptions = siteConnectionManaged ? [
-    { label: 'OpenAI 兼容接口', value: 'openai' },
-    { label: 'Grok（Sub2API）', value: 'grok' },
+    { label: 'ChatGPT', value: 'openai' },
+    { label: 'Grok', value: 'grok' },
   ] : [
     ...(!presetConfigOnly && !activeProfileLocked
       ? [{ label: '创建自定义服务商', value: ADD_CUSTOM_PROVIDER_VALUE, variant: 'action' as const }]

@@ -46,6 +46,18 @@ function fill(input: HTMLInputElement, value: string) {
 }
 
 describe('Agent 独立配置', () => {
+  it('图片配置的生图类型简化为 ChatGPT 和 Grok', () => {
+    const p = renderAgentSettings(true)
+    act(() => p.container.querySelector<HTMLButtonElement>('[aria-label="编辑 Agent 图片配置「图像配置」"]')!.click())
+    const control = [...p.container.querySelectorAll('label')].find((label) => label.textContent?.startsWith('生图类型'))!
+    act(() => control.querySelector<HTMLElement>('.cursor-pointer')!.click())
+    expect(control.textContent).toContain('ChatGPT')
+    expect(control.textContent).toContain('Grok')
+    expect(control.textContent).not.toContain('兼容接口')
+    expect(control.textContent).not.toContain('Sub2API')
+    expect(p.commit).not.toHaveBeenCalled()
+  })
+
   it('默认只展示列表，编辑后打开弹窗，Escape 关闭并恢复列表焦点', () => {
     const p = renderAgentSettings(true)
     expect(p.container.querySelector('[role="dialog"]')).toBeNull()

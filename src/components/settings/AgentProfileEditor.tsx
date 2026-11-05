@@ -21,7 +21,7 @@ interface AgentProfileEditorProps {
 
 const FIELD_CLASS = 'w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-300 disabled:opacity-60 dark:bg-white/[0.06] dark:text-gray-200'
 
-/** 列表管理 Agent 配置，弹窗支持按名称选择本站个人密钥，显式启用才切换当前使用项。 */
+/** 列表管理 Agent 配置，弹窗以 ChatGPT/Grok 展示生图类型并支持按名称选择本站密钥，显式启用才切换当前使用项。 */
 export default function AgentProfileEditor({ draft, role, onChange, onCommit, onDelete }: AgentProfileEditorProps) {
   const [showKey, setShowKey] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -131,7 +131,7 @@ export default function AgentProfileEditor({ draft, role, onChange, onCommit, on
         />
       </label>
       {role === 'image' && <label className="block space-y-1 text-xs text-gray-500">生图类型<Select value={profile.provider} disabled={locked || onlyPresets} options={[
-        { label: 'OpenAI 兼容接口', value: 'openai' }, { label: 'Grok（Sub2API）', value: 'grok' },
+        { label: 'ChatGPT', value: 'openai' }, { label: 'Grok', value: 'grok' },
         ...(!IS_SITE_MODE ? [{ label: 'sub2api（异步）', value: 'sb2api-async' }, { label: 'fal.ai', value: 'fal' }, ...draft.customProviders.map((provider) => ({ label: provider.name, value: provider.id }))] : []),
       ]} onChange={(value) => {
         const next = switchApiProfileProvider(profile, String(value), getCustomProviderDefinition(draft, String(value)) ?? undefined)
