@@ -62,6 +62,7 @@ import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { getGrokImageInputError } from './lib/grokImage'
 import { runWithConcurrency, splitBatchPrompts } from './lib/batchPrompts'
+import { mergeRetriedTaskOutputs } from './lib/taskOutputRetry'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteImageCacheEntry, ensureImageCached, scheduleMissingThumbnailBackfill } from './lib/imageCache'
@@ -90,6 +91,7 @@ const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const taskExecutions = new Map<string, symbol>()
+const taskQueueControllers = new Map<string, AbortController>()
 const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
 const deletedActiveAgentTasks = new Map<string, { task: TaskRecord; controller: AbortController }>()
@@ -1114,11 +1116,13 @@ function genId(): string {
   return Date.now().toString(36) + (++uid).toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
-/** 持久化前修复旧 Grok 服务商引用并清理原始响应载荷，返回兼容历史记录。 */
+/** 持久化前修复旧供应商引用、清理原始载荷与页面队列状态；刷新不恢复自动请求。 */
 function getPersistableTask(task: TaskRecord): TaskRecord {
   const migratedTask = migrateLegacyGrokTask(task, useStore.getState().settings)
   const rawResponsePayload = getPersistableRawResponsePayload(migratedTask.rawResponsePayload)
-  return rawResponsePayload === migratedTask.rawResponsePayload ? migratedTask : { ...migratedTask, rawResponsePayload }
+  return rawResponsePayload === migratedTask.rawResponsePayload && !migratedTask.generationProgress
+    ? migratedTask
+    : { ...migratedTask, rawResponsePayload, generationProgress: undefined }
 }
 
 function putTask(task: TaskRecord): Promise<IDBValidKey> {
@@ -2739,6 +2743,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   void executeAgentRound(conversationId, newRoundId, normalizedParams, requestSettings, activeProfile, imageProfile)
 }
 
+/** 执行 Agent 轮次与图片工具；删除卡片仅取消其等待请求，停止或清空轮次则中止整轮。 */
 async function executeAgentRound(
   conversationId: string,
   roundId: string,
@@ -2814,12 +2819,14 @@ async function executeAgentRound(
       }))
     }
 
+    /** 创建或复用图片卡片；轮次已停止或清空时禁止在异步恢复后重新创建记录。 */
     const ensureStreamingAgentTask = async (
       toolCallId: string,
       taskPrompt = '',
       inputImageIds = round.inputImageIds ?? [],
       options: { createdAt?: number; agentBatchCallId?: string; agentBatchItemId?: string; maskTargetImageId?: string | null; maskImageId?: string | null; taskParams?: TaskParams } = {},
     ) => {
+      if (controller.signal.aborted) throw createAgentAbortError()
       const existingTaskId = taskIdByToolCallId.get(toolCallId)
       if (existingTaskId) return existingTaskId
 
@@ -3035,6 +3042,7 @@ async function executeAgentRound(
       }
     }
 
+    /** 调用混合模式单图接口，出队前检查卡片是否仍存在，避免删除后继续发送。 */
     const callHybridImageApiSingle = async (opts: {
       taskId: string
       prompt: string
@@ -3045,6 +3053,12 @@ async function executeAgentRound(
     }) => {
       const result = await callImageApi({
         settings: imageRequestSettings,
+        signal: opts.signal,
+        isCancelled: () => opts.signal.aborted || !useStore.getState().tasks.some((task) => task.id === opts.taskId),
+        onRequestState: (event) => {
+          if (opts.signal.aborted) return
+          updateTaskInStore(opts.taskId, { generationProgress: event.state === 'finished' ? undefined : { state: event.state, requestIndex: event.requestIndex, queuePosition: event.position } })
+        },
         prompt: replaceImageMentionsForApi(opts.prompt, opts.referenceImageDataUrls.length),
         params: opts.taskParams,
         inputImageDataUrls: opts.referenceImageDataUrls,
@@ -3088,6 +3102,7 @@ async function executeAgentRound(
       }
     }
 
+    /** 执行混合模式单图工具；已删除卡片的取消结果不写入模型的工具输出。 */
     const executeSingleImageFunctionCall = async (functionCallItem: ResponsesOutputItem): Promise<string | null> => {
       const callId = functionCallItem.call_id ?? ''
       const item = parseSingleImageCallArguments(functionCallItem.arguments ?? '')
@@ -3140,13 +3155,14 @@ async function executeAgentRound(
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         if (controller.signal.aborted) throw createAgentAbortError()
+        if (!useStore.getState().tasks.some((task) => task.id === taskId)) return null
         if (pauseAgentImageTaskForRecovery(toolCallId, err)) throw createAgentRecoveryPauseError()
         failAgentImageTask(toolCallId, error)
         return JSON.stringify({ id: item.id, status: 'error', error })
       }
     }
 
-    // Helper: execute a generate_image_batch function call concurrently
+    /** 创建批量图片卡片并提交工具请求；出队前跳过已删除卡片，保留其他图片的执行。 */
     const executeBatchFunctionCall = async (functionCallItem: ResponsesOutputItem): Promise<string> => {
       const callId = functionCallItem.call_id ?? ''
       const args = functionCallItem.arguments ?? ''
@@ -3210,6 +3226,12 @@ async function executeAgentRound(
               referenceIds,
               allowPromptRewrite: requestSettings.allowPromptRewrite,
               signal: controller.signal,
+              isCancelled: () => !useStore.getState().tasks.some((task) => task.id === taskIdByToolCallId.get(batchToolCallId)),
+              onRequestState: (state, position) => {
+                if (controller.signal.aborted) return
+                const taskId = taskIdByToolCallId.get(batchToolCallId)
+                if (taskId) updateTaskInStore(taskId, { generationProgress: state === 'finished' ? undefined : { state, requestIndex: 0, queuePosition: position }, ...(state === 'running' ? { startedAt: Date.now() } : {}) })
+              },
               onImageToolStarted: shouldStreamAssistantMessage
                 ? async () => {
                     if (controller.signal.aborted) return
@@ -3705,7 +3727,7 @@ async function executeAgentRound(
 }
 
 /** 执行画廊任务并清理本地提示词尾注用于改写比较；执行失效后忽略结果并阻止后续请求。 */
-async function executeTask(taskId: string) {
+async function executeTask(taskId: string, retryIndices?: number[]) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
   if (!task) return
@@ -3724,7 +3746,10 @@ async function executeTask(taskId: string) {
     return
   }
   const activeProfile = taskProfile ?? getActiveApiProfile(settings)
+  const queueController = new AbortController()
+  taskQueueControllers.set(taskId, queueController)
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
+  let requestStarted = false
   const taskProvider = taskProfile?.provider ?? task.apiProvider ?? activeProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
         ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
@@ -3736,6 +3761,7 @@ async function executeTask(taskId: string) {
   if (
     taskProvider !== 'fal' &&
     !isAsyncCustomProviderTask(requestSettings, taskProvider, task.inputImageIds.length > 0) &&
+    !(IS_SITE_MODE && activeProfile.provider === 'openai') &&
     !usesConcurrentImageRequests(requestSettings, activeProfile, task.params, task.inputImageIds.length > 0)
   ) {
     scheduleOpenAIWatchdog(taskId, activeProfile.timeout, activeProfile)
@@ -3762,12 +3788,32 @@ async function executeTask(taskId: string) {
     const result = await callImageApi({
       settings: requestSettings,
       prompt: replaceImageMentionsForApi(requestPrompt, inputDataUrls.length),
-      params: task.params,
+      params: retryIndices ? { ...task.params, n: retryIndices.length } : task.params,
       nativeTransparentBackground: task.params.transparent_output && !task.transparentOutput,
       inputImageDataUrls: inputDataUrls,
       maskDataUrl,
       skipCodexCliSizePrompt: task.sourceMode === 'agent',
       isCancelled: () => taskExecutions.get(taskId) !== execution,
+      signal: queueController.signal,
+      onRequestState: (event) => {
+        if (taskExecutions.get(taskId) !== execution) return
+        const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+        if (!latest || latest.status !== 'running') return
+        if (event.state === 'finished') {
+          updateTaskInStore(taskId, { generationProgress: undefined })
+          return
+        }
+        // 多张同时入队时，后续等待项不能覆盖当前正在执行的图片提示。
+        if (event.state === 'queued' && latest.generationProgress?.state === 'running') return
+        const requestIndex = retryIndices?.[event.requestIndex] ?? event.requestIndex
+        if (event.state === 'queued' && latest.generationProgress?.state === 'queued' && latest.generationProgress.requestIndex < requestIndex) return
+        const startedAt = event.state === 'running' && !requestStarted ? Date.now() : undefined
+        if (startedAt) requestStarted = true
+        updateTaskInStore(taskId, {
+          ...(startedAt ? { startedAt } : {}),
+          generationProgress: { state: event.state, requestIndex, queuePosition: event.position },
+        })
+      },
       onFalRequestEnqueued: (request) => {
         if (taskExecutions.get(taskId) !== execution) return
         falRequestInfo = request
@@ -3787,7 +3833,7 @@ async function executeTask(taskId: string) {
       },
       onPartialImage: (partial) => {
         if (taskExecutions.get(taskId) !== execution) return
-        useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
+        useStore.getState().setTaskStreamPreview(taskId, partial.image, retryIndices?.[partial.requestIndex ?? 0] ?? partial.requestIndex)
         void persistTaskStreamPartialImage(taskId, partial.image, execution)
       },
     })
@@ -3842,6 +3888,10 @@ async function executeTask(taskId: string) {
     const partialImageIdsToClean = latestBeforeUpdate.streamPartialImageIds || []
     clearOpenAIWatchdogTimer(taskId)
     useStore.getState().setTaskStreamPreview(taskId)
+    const retryPatch = retryIndices ? mergeRetriedTaskOutputs(task, retryIndices, {
+      outputImages: outputIds, outputErrors: result.failedRequests, actualParamsByImage, revisedPromptByImage,
+      transparentOriginalImages: transparentOriginalImageIds, rawImageUrls: result.rawImageUrls,
+    }) : undefined
     updateTaskInStore(taskId, {
       outputImages: outputIds,
       transparentOriginalImages: transparentOriginalImageIds,
@@ -3851,16 +3901,19 @@ async function executeTask(taskId: string) {
       actualParams,
       actualParamsByImage,
       revisedPromptByImage,
-      ...createTaskDonePatch(task, Date.now()),
+      ...createTaskDonePatch(latestBeforeUpdate, Date.now()),
+      ...retryPatch,
+      generationProgress: undefined,
       falRecoverable: false,
       customRecoverable: false,
     })
     void deleteUnreferencedImageIds(partialImageIdsToClean)
 
-    const failedCount = result.failedRequests?.length ?? 0
+    const failedCount = retryPatch ? retryPatch.outputErrors?.length ?? 0 : result.failedRequests?.length ?? 0
+    const successCount = retryPatch?.outputImages.length ?? outputIds.length
     const completionMessage = failedCount > 0
-      ? `生成完成：成功 ${outputIds.length} 张，失败 ${failedCount} 张`
-      : `生成完成，共 ${outputIds.length} 张图片`
+      ? `生成完成：成功 ${successCount} 张，失败 ${failedCount} 张`
+      : `生成完成，共 ${successCount} 张图片`
     // 批量任务只在整批结束时统一提示
     if (!batchTaskIds.has(taskId)) {
       useStore.getState().showToast(completionMessage, failedCount > 0 ? 'error' : 'success')
@@ -3917,8 +3970,14 @@ async function executeTask(taskId: string) {
         errorMessage += `\n${networkErrorHint}`
       }
       updateTaskInStore(taskId, {
-        ...createTaskErrorPatch(task, errorMessage, Date.now()),
+        ...createTaskErrorPatch(latestTask, errorMessage, Date.now()),
         ...getRawErrorPayload(err),
+        ...(retryIndices ? {
+          ...mergeRetriedTaskOutputs(task, retryIndices, { outputImages: [], outputErrors: retryIndices.map((_, requestIndex) => ({ requestIndex, error: errorMessage })) }),
+          status: 'done' as const,
+          error: null,
+        } : {}),
+        generationProgress: undefined,
         falRecoverable: false,
         customRecoverable: false,
       })
@@ -3927,6 +3986,7 @@ async function executeTask(taskId: string) {
       showTaskFailureNotification(task)
     }
   } finally {
+    if (taskQueueControllers.get(taskId) === queueController) taskQueueControllers.delete(taskId)
     if (taskExecutions.get(taskId) === execution) taskExecutions.delete(taskId)
     // 释放输入图片的内存缓存（已持久化到 IndexedDB，后续按需从 DB 加载）
     if (!taskExecutions.has(taskId)) {
@@ -4035,11 +4095,15 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 使用任务所属工作区的原配置重试；原配置缺失时提示设置，不回退其他配置。 */
-export async function retryTask(task: TaskRecord) {
+/** 画廊失败原地重试；部分失败只补选中或全部失败位置，成功任务另建一组，Agent 保持原规则。 */
+export async function retryTask(task: TaskRecord, requestIndex?: number) {
   const { settings, tasks } = useStore.getState()
   const source = tasks.find((item) => item.id === task.id)
   if (!source || source.status === 'running' || source.falRecoverable || source.customRecoverable) return
+  const retryIndices = !isAgentTask(source) && source.outputImages.length && source.outputErrors?.length
+    ? source.outputErrors.filter((item) => requestIndex === undefined || item.requestIndex === requestIndex).map((item) => item.requestIndex).sort((a, b) => a - b)
+    : undefined
+  if (requestIndex !== undefined && !retryIndices?.length) return
   const activeProfile = source.apiProfileId ? getTaskApiProfile(settings, source) : getActiveApiProfile(settings)
   if (!activeProfile) {
     useStore.getState().showToast('原任务的配置已不存在，请先重新选择配置并复用参数生成。', 'error')
@@ -4058,9 +4122,7 @@ export async function retryTask(task: TaskRecord) {
   const transparentMeta = taskParams.transparent_output && activeProfile.transparentBackgroundMethod === 'local'
     ? createTransparentOutputMeta(source.prompt.trim())
     : null
-  const overwrite = !isAgentTask(source) && (
-    settings.retryMode === 'overwriteAll' || (settings.retryMode === 'overwriteFailed' && source.status === 'error')
-  )
+  const overwrite = !isAgentTask(source) && (source.status === 'error' || Boolean(retryIndices?.length))
   const taskId = overwrite ? source.id : genId()
   const startedAt = Date.now()
   const newTask: TaskRecord = {
@@ -4079,13 +4141,14 @@ export async function retryTask(task: TaskRecord) {
     maskImageId: source.maskImageId ?? null,
     transparentOutput: transparentMeta?.transparentOutput,
     transparentPrompt: transparentMeta?.effectivePrompt,
-    outputImages: [],
-    outputErrors: undefined,
-    transparentOriginalImages: undefined,
-    actualParams: undefined,
-    actualParamsByImage: undefined,
-    revisedPromptByImage: undefined,
-    rawImageUrls: undefined,
+    outputImages: retryIndices ? source.outputImages : [],
+    outputErrors: retryIndices ? source.outputErrors : undefined,
+    transparentOriginalImages: retryIndices ? source.transparentOriginalImages : undefined,
+    actualParams: retryIndices ? source.actualParams : undefined,
+    actualParamsByImage: retryIndices ? source.actualParamsByImage : undefined,
+    revisedPromptByImage: retryIndices ? source.revisedPromptByImage : undefined,
+    rawImageUrls: retryIndices ? source.rawImageUrls : undefined,
+    generationProgress: undefined,
     rawResponsePayload: undefined,
     streamPartialImageIds: undefined,
     falRequestId: undefined,
@@ -4102,6 +4165,8 @@ export async function retryTask(task: TaskRecord) {
   }
 
   if (overwrite) {
+    taskQueueControllers.get(taskId)?.abort()
+    taskQueueControllers.delete(taskId)
     taskExecutions.delete(taskId)
     // 覆盖后不再属于原批量，完成时应正常提示
     batchTaskIds.delete(taskId)
@@ -4114,7 +4179,7 @@ export async function retryTask(task: TaskRecord) {
     ? tasks.map((item) => item.id === taskId ? newTask : item)
     : [newTask, ...tasks])
   await putTask(newTask)
-  if (overwrite) {
+  if (overwrite && !retryIndices) {
     void deleteUnreferencedImageIds([
       ...source.outputImages,
       ...(source.transparentOriginalImages ?? []),
@@ -4122,7 +4187,7 @@ export async function retryTask(task: TaskRecord) {
     ])
   }
 
-  executeTask(taskId)
+  executeTask(taskId, retryIndices)
 }
 
 /** 复用任务参数与可用配置；站点模式不临时启用外站历史连接，也不迁移其密钥。 */
@@ -4401,6 +4466,8 @@ async function removeTasks(taskIds: string[], updateState?: TaskDeletionStateUpd
     clearCustomRecoveryTimer(task.id)
     clearOpenAIWatchdogTimer(task.id)
     taskExecutions.delete(task.id)
+    taskQueueControllers.get(task.id)?.abort()
+    taskQueueControllers.delete(task.id)
   }
 
   const cleanup = scrubAgentOutputPayloadsForDeletedTasks(deletedTasks)
@@ -4474,17 +4541,15 @@ export interface ClearOptions {
   clearTasks?: boolean
 }
 
-/** 按用户所选范围清空本地数据；清空配置时同时恢复两套工作区的默认参数。 */
+/** 按所选范围清空本地数据；清空任务先使执行失效并取消等待请求，清空配置恢复两套默认参数。 */
 export async function clearData(options: ClearOptions = { clearConfig: true, clearTasks: true }) {
   const { setTasks, clearInputImages, clearMaskDraft, setSettings, showToast } = useStore.getState()
   // 清空后剩余的批量提示词已没有对应的任务、配置或图片，直接结束批量
   if (useStore.getState().batchProgress) endBatch(activeBatchId)
 
   if (options.clearTasks) {
-    await dbClearTasks()
-    await dbClearAgentConversations()
-    await clearImages()
-    clearImageCaches()
+    // 在任何异步清理前移除任务并失效执行，取消回调和迟到结果不能重新写回已清空的数据。
+    taskExecutions.clear()
     setTasks([])
     useStore.setState({
       agentConversations: [],
@@ -4492,6 +4557,14 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
       supportPromptOpen: false,
       supportPromptSkippedForImportedData: false,
     })
+    for (const controller of taskQueueControllers.values()) controller.abort()
+    taskQueueControllers.clear()
+    for (const controller of agentRoundControllers.values()) controller.abort()
+    agentRoundControllers.clear()
+    await dbClearTasks()
+    await dbClearAgentConversations()
+    await clearImages()
+    clearImageCaches()
     clearInputImages()
     clearMaskDraft()
   }

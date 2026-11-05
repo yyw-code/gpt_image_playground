@@ -7,12 +7,12 @@ import { describe, expect, it, vi } from 'vitest'
 import SizePickerModal from './SizePickerModal'
 
 describe('model-aware size picker', () => {
-  it('offers fixed 1.5 sizes without custom pixels or 4K', () => {
+  it('offers fixed 1.5 sizes while retaining disabled custom controls', () => {
     const html = renderToStaticMarkup(<SizePickerModal currentSize="1024x1024" sizeMode="fixed" onSelect={vi.fn()} onClose={vi.fn()} />)
     expect(html).toContain('1536x1024')
     expect(html).toContain('1024x1536')
-    expect(html).not.toContain('4K')
-    expect(html).not.toContain('自定义宽高')
+    expect(html).toContain('4K')
+    expect(html).toContain('自定义宽高')
   })
 
   it('shows only composition controls for a Codex connection', () => {
@@ -20,10 +20,28 @@ describe('model-aware size picker', () => {
     expect(html).toContain('设置构图比例')
     expect(html).toContain('16:9')
     expect(html).not.toContain('1280x720')
-    expect(html).not.toContain('基准分辨率')
-    expect(html).not.toContain('自定义宽高')
-    expect(html).not.toContain('4K')
+    expect(html).toContain('基准分辨率')
+    expect(html).toContain('自定义宽高')
+    expect(html).toContain('4K')
     expect(html).toContain('不保证精确比例')
+  })
+
+  it.each(['fixed', 'composition', 'auto'] as const)('禁用 %s 的自定义宽高和档位，点击不会改变确认结果', (sizeMode) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    const onSelect = vi.fn()
+    try {
+      act(() => root.render(<SizePickerModal currentSize="1024x1024" sizeMode={sizeMode} onSelect={onSelect} onClose={vi.fn()} />))
+      for (const label of ['自定义宽高', '1K', '2K', '4K']) {
+        const button = [...container.querySelectorAll('button')].find((item) => item.textContent === label)!
+        expect(button.disabled).toBe(true)
+        act(() => button.click())
+      }
+      const confirm = [...container.querySelectorAll('button')].find((button) => button.textContent === '确定')!
+      act(() => confirm.click())
+      expect(onSelect).toHaveBeenCalledWith(sizeMode === 'auto' ? 'auto' : '1024x1024')
+    } finally { act(() => root.unmount()); vi.unstubAllGlobals() }
   })
 
   it('keeps custom native sizes and labels experimental resolution', () => {

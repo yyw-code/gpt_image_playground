@@ -83,6 +83,13 @@ describe('task lifecycle patches', () => {
     expect(result.tasks.find((item) => item.id === 'custom-sync-running')).toMatchObject({ status: 'error', error: '请求中断' })
     expect(result.tasks.find((item) => item.id === 'done-task')).toEqual(doneTask)
   })
+
+  it('clears page queue progress on refresh without losing successful outputs', () => {
+    const source = task({ status: 'running', outputImages: ['success'], outputErrors: [{ requestIndex: 1, error: 'busy' }], generationProgress: { state: 'queued', requestIndex: 1, queuePosition: 3 } })
+    const restored = markInterruptedOpenAIRunningTasks([source], 10_000).tasks[0]
+    expect(restored).toMatchObject({ status: 'error', error: '请求中断', outputImages: ['success'], outputErrors: source.outputErrors })
+    expect(restored.generationProgress).toBeUndefined()
+  })
 })
 
 describe('task actual params', () => {

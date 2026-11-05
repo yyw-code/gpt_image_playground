@@ -46,7 +46,7 @@ function findPresetForSize(size: string) {
   return null
 }
 
-/** 按模型提供固定尺寸或自定义尺寸；受限通道只选择构图比例，不承诺像素。 */
+/** 展示全部尺寸入口；受限通道保留比例选择，不支持的像素控制置灰且不写入参数。 */
 export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, codexCli = false, sizeMode = 'custom' }: Props) {
   usePreventBackgroundScroll(true)
 
@@ -76,9 +76,13 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   const currentPreset = findPresetForSize(currentSize)
   const compositionOnly = codexCli || sizeMode === 'composition'
   const fixedSizesOnly = sizeMode === 'fixed'
+  const autoOnly = sizeMode === 'auto'
+  const customSizeDisabled = compositionOnly || fixedSizesOnly || autoOnly
+  const sizeDisabledReason = compositionOnly ? '当前通道仅支持构图比例引导，像素由接口决定' : fixedSizesOnly ? '当前模型仅支持下方固定尺寸' : '当前模型尺寸能力尚未确认，使用接口自动尺寸'
   const [fixedSize, setFixedSize] = useState(FIXED_IMAGE_SIZES.includes(currentSize) ? currentSize : 'auto')
   const currentParsedSize = parseSize(currentSize)
   const [mode, setMode] = useState<Mode>(() => {
+    if (autoOnly) return 'auto'
     if (!currentSize || currentSize === 'auto') return allowAuto ? 'auto' : 'ratio'
     if (currentPreset) return 'ratio'
     if (compositionOnly) return 'ratio'
@@ -115,6 +119,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   )
 
   const previewSize = useMemo(() => {
+    if (autoOnly) return 'auto'
     if (fixedSizesOnly) return fixedSize
     if (mode === 'auto') return 'auto'
     
@@ -133,7 +138,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     }
     
     return ''
-  }, [mode, tier, activeRatio, customW, customH, normalizeSize, fixedSizesOnly, fixedSize])
+  }, [mode, tier, activeRatio, customW, customH, normalizeSize, fixedSizesOnly, fixedSize, autoOnly])
 
   /** 受限通道隐藏内部用于保存比例的像素值，只展示构图选择。 */
   const displaySize = (size: string) => {
@@ -172,6 +177,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     }, 450)
   }
 
+  /** 仅确认当前通道允许的尺寸；禁用入口不会修改内部模式。 */
   const applySize = () => {
     if (!previewSize) return
     onSelect(previewSize)
@@ -214,30 +220,45 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
         </div>
 
         <div className="space-y-6">
-          {!fixedSizesOnly && <div className="flex rounded-xl bg-gray-100/80 p-1 dark:bg-white/[0.04]">
-            {allowAuto && (
+          <div className="flex rounded-xl bg-gray-100/80 p-1 dark:bg-white/[0.04]">
+            {(
               <button
-                onClick={() => setMode('auto')}
-                className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'auto' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+                disabled={!allowAuto || fixedSizesOnly}
+                title={!allowAuto ? '当前模式不支持自动尺寸' : fixedSizesOnly ? sizeDisabledReason : undefined}
+                onClick={() => { if (allowAuto && !fixedSizesOnly) setMode('auto') }}
+                className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${mode === 'auto' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
               >
                 自动
               </button>
             )}
             <button
-              onClick={() => setMode('ratio')}
-              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'ratio' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+              disabled={fixedSizesOnly || autoOnly}
+              title={fixedSizesOnly || autoOnly ? sizeDisabledReason : undefined}
+              onClick={() => { if (!fixedSizesOnly && !autoOnly) setMode('ratio') }}
+              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${mode === 'ratio' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
             >
               按比例
             </button>
-            {!compositionOnly && <button
-              onClick={() => setMode('resolution')}
-              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'resolution' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+            <button
+              disabled={customSizeDisabled}
+              title={customSizeDisabled ? sizeDisabledReason : undefined}
+              onClick={() => { if (!customSizeDisabled) setMode('resolution') }}
+              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${mode === 'resolution' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
             >
               自定义宽高
-            </button>}
-          </div>}
+            </button>
+          </div>
 
           <div className="h-[380px] max-h-[55vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 pr-1 -mr-1 pb-2">
+            <section className="mb-5">
+              <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
+              <div className="grid grid-cols-3 gap-2">
+                {TIERS.map((item) => (
+                  <button key={item} className={`${buttonClass(tier === item)} w-full disabled:opacity-40 disabled:cursor-not-allowed`} disabled={customSizeDisabled} title={customSizeDisabled ? sizeDisabledReason : undefined} onClick={() => { if (!customSizeDisabled) setTier(item) }}>{item}</button>
+                ))}
+              </div>
+            </section>
+            {customSizeDisabled && <p className="mb-4 text-xs text-gray-500">{sizeDisabledReason}，灰色选项不可选择。</p>}
             {fixedSizesOnly && <div className="grid grid-cols-2 gap-2">{['auto', ...FIXED_IMAGE_SIZES].map((size) => <button key={size} className={buttonClass(fixedSize === size)} onClick={() => setFixedSize(size)}>{size === 'auto' ? '自动' : size}</button>)}</div>}
             {!fixedSizesOnly && mode === 'auto' && (
               <div className="flex h-full animate-fade-in items-center justify-center pt-8 pb-4 text-center">
@@ -259,15 +280,6 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
             {!fixedSizesOnly && mode === 'ratio' && (
               <div className="space-y-5 animate-fade-in">
-                {!compositionOnly && <section>
-                  <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {TIERS.map((item) => (
-                      <button key={item} className={`${buttonClass(tier === item)} w-full`} onClick={() => setTier(item)}>{item}</button>
-                    ))}
-                  </div>
-                </section>}
-
                 <section>
                   <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">图像比例</div>
                   <div className="grid grid-cols-4 gap-2">

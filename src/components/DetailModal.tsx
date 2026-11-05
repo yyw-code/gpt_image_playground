@@ -1,4 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
+import { getTaskOutputSlots } from '../lib/taskOutputRetry'
+import { getTaskGenerationLabel } from '../lib/taskProgress'
 import { useStore, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
@@ -19,6 +21,7 @@ import ViewportTooltip from './ViewportTooltip'
 import { CommentBadge } from './CommentMarks'
 
 /** 展示任务快照与原图尺寸、质量和可选复杂度；Grok 使用独立分辨率、比例及 2.0 质量。 */
+/** 展示任务图片及逐图失败位置，支持保持详情打开的原记录补图和队列状态。 */
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
@@ -153,30 +156,7 @@ export default function DetailModal() {
   const maskTargetSrc = maskTargetId ? imageSrcs[maskTargetId] || '' : ''
   const maskSrc = task?.maskImageId ? imageSrcs[task.maskImageId] || '' : ''
   const allInputImageIds = task?.inputImageIds ?? []
-  const outputSlots = useMemo(() => {
-    if (!task) return []
-    const outputErrors = task.outputErrors ?? []
-    if (outputErrors.length === 0) {
-      return task.outputImages.map((imageId, outputImageIndex) => ({
-        requestIndex: outputImageIndex,
-        outputImageIndex,
-        imageId,
-        error: '',
-      }))
-    }
-
-    const errorsByIndex = new Map(outputErrors.map((item) => [item.requestIndex, item.error]))
-    const requestedCount = Math.max(task.params.n, task.outputImages.length + outputErrors.length)
-    let outputImageIndex = 0
-    return Array.from({ length: requestedCount }, (_, requestIndex) => {
-      const error = errorsByIndex.get(requestIndex)
-      if (error) return { requestIndex, outputImageIndex: -1, imageId: '', error }
-      const imageId = task.outputImages[outputImageIndex] ?? ''
-      const slot = { requestIndex, outputImageIndex, imageId, error: '' }
-      outputImageIndex += 1
-      return slot
-    })
-  }, [task])
+  const outputSlots = useMemo(() => task ? getTaskOutputSlots(task) : [], [task])
   const currentOutputSlot = outputSlots[imageIndex]
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
@@ -284,7 +264,9 @@ export default function DetailModal() {
     return new Date(ts).toLocaleString('zh-CN')
   }
 
+  /** 等待时展示排队状态，实际请求开始后计算执行耗时。 */
   const formatDuration = () => {
+    if (task.status === 'running' && task.generationProgress?.state === 'queued') return '排队中'
     if (task.status === 'running' || isFalReconnecting || isCustomReconnecting) {
       const seconds = Math.max(0, Math.floor((now - (task.startedAt ?? task.createdAt)) / 1000))
       const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
@@ -442,9 +424,10 @@ export default function DetailModal() {
     }
   }
 
+  /** 失败在当前记录补图，详情保持打开；成功或 Agent 新建时关闭旧详情。 */
   const handleRetry = () => {
-    retryTask(task)
-    setDetailTaskId(null)
+    void retryTask(task)
+    if (isAgentTask || task.status === 'done' && !task.outputErrors?.length) setDetailTaskId(null)
   }
 
   return (
@@ -471,7 +454,8 @@ export default function DetailModal() {
 
         {/* 左侧：图片 */}
         <div className="md:w-1/2 w-full h-64 md:h-auto bg-gray-100 dark:bg-black/20 relative flex items-center justify-center flex-shrink-0 min-h-[16rem]">
-          {task.status === 'done' && outputLen > 0 && (currentOutputImageId || task.outputImages.length > 0) && (
+          {task.status === 'running' && task.outputImages.length > 0 && <span className="absolute bottom-10 left-2 right-2 z-20 rounded bg-black/70 p-1 text-center text-xs text-white">{getTaskGenerationLabel(task)}</span>}
+          {(task.status === 'done' || task.status === 'running') && outputLen > 0 && (currentOutputImageId || task.outputImages.length > 0) && (
             <div className="absolute right-3 top-[15px] z-20 flex items-center gap-1.5">
               {currentOutputImageId && (
                 <div className="relative group flex">
@@ -514,7 +498,7 @@ export default function DetailModal() {
               )}
             </div>
           )}
-          {task.status === 'done' && outputLen > 0 && currentOutputPreviewSrc && (
+          {(task.status === 'done' || task.status === 'running') && outputLen > 0 && currentOutputPreviewSrc && (
             <>
               <img
                 src={currentOutputPreviewSrc}
@@ -610,7 +594,7 @@ export default function DetailModal() {
               )}
             </>
           )}
-          {task.status === 'done' && outputLen > 0 && currentOutputError && (
+          {(task.status === 'done' || task.status === 'running') && outputLen > 0 && currentOutputError && (
             <div className="w-full max-w-md px-4 text-center">
               <svg className="w-10 h-10 text-red-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -626,6 +610,7 @@ export default function DetailModal() {
               >
                 {currentOutputError}
               </p>
+              <button type="button" disabled={task.status === 'running'} onClick={() => { void retryTask(task, currentOutputSlot.requestIndex) }} className="mt-3 rounded-full bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-40 disabled:cursor-not-allowed">重试这张</button>
               {outputLen > 1 && (
                 <>
                   <button
@@ -651,13 +636,13 @@ export default function DetailModal() {
               )}
             </div>
           )}
-          {(task.status === 'running' || isFalReconnecting) && (
+          {((task.status === 'running' && task.outputImages.length === 0) || isFalReconnecting) && (
             <>
               <div className="absolute left-4 top-4 flex items-center gap-1 bg-black/50 text-white text-xs px-2 py-0.5 rounded backdrop-blur-sm font-mono">
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                {formatDuration()}
+                {task.status === 'running' ? getTaskGenerationLabel(task) : formatDuration()}
               </div>
               {task.status === 'running' && streamPreviewLen > 0 && (
                 <>
@@ -965,6 +950,7 @@ export default function DetailModal() {
               </div>
             )}
 
+            {!isAgentTask && Boolean(task.outputErrors?.length) && <button type="button" disabled={task.status === 'running'} onClick={handleRetry} className="mb-4 rounded-full bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-40 disabled:cursor-not-allowed">重试失败的 {task.outputErrors?.length} 张</button>}
             {/* 参数 */}
             <h3 className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
               参数配置

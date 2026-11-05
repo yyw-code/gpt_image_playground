@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps } from 'react'
+import { act, type ComponentProps } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../../types'
@@ -8,7 +9,7 @@ import { createDefaultOpenAIProfile } from '../../lib/apiProfiles'
 import InputParamsPanel from './inputParamsPanel'
 
 vi.mock('../Select', () => ({
-  default: ({ prefix, options, disabled }: { prefix?: unknown; options: Array<{ label: string }>; disabled?: boolean }) => <span data-disabled={disabled}>{prefix as string}{options.map((option) => option.label).join(' / ')}</span>,
+  default: ({ prefix, value, onChange, options, disabled }: { prefix?: React.ReactNode; value: string; onChange: (value: string) => void; options: Array<{ label: string; value: string; disabled?: boolean }>; disabled?: boolean }) => <label>{prefix}<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></label>,
 }))
 vi.mock('./paramPopoverChip', () => ({
   default: ({ children, summary }: { children: React.ReactNode; summary: string }) => <div>{summary}{children}</div>,
@@ -37,81 +38,86 @@ function props(provider: string): ComponentProps<typeof InputParamsPanel> {
   }
 }
 
-describe('Grok generation controls', () => {
-  it('offers composition complexity only on native 2.6 Images and retains existing output formats', () => {
+/** 将实际参数面板渲染为 DOM，检查可见入口及浏览器禁用状态。 */
+function markup(value: ComponentProps<typeof InputParamsPanel>) {
+  const container = document.createElement('div')
+  container.innerHTML = renderToStaticMarkup(<InputParamsPanel {...value} />)
+  return container
+}
+
+/** 按字段名称获取其下拉框，不依赖面板内部文件实现。 */
+function control(container: HTMLElement, label: string) {
+  return [...container.querySelectorAll('select')].find((select) => select.closest('label')?.textContent?.startsWith(label) || select.parentElement?.parentElement?.previousElementSibling?.textContent === label)!
+}
+
+describe('参数能力展示', () => {
+  it('原生 2.6 可用复杂度，其他通道保留但禁用', () => {
     const value = props('openai')
     value.activeProfile.model = 'gpt-image-2.6-flare'
-    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
-    expect(html).toContain('构图复杂度')
-    expect(html).toContain('接口默认')
-    expect(html).toContain('PNG / JPEG / WebP')
+    expect(control(markup(value), '构图复杂度').disabled).toBe(false)
     for (const patch of [{ model: 'gpt-image-2.5-flare' }, { codexCli: true }, { apiMode: 'responses' as const, imageGenerationModel: 'gpt-image-2.6-flare' }]) {
-      expect(renderToStaticMarkup(<InputParamsPanel {...value} activeProfile={{ ...value.activeProfile, ...patch }} />)).not.toContain('构图复杂度')
+      const container = markup({ ...value, activeProfile: { ...value.activeProfile, ...patch } })
+      expect(control(container, '构图复杂度').disabled).toBe(true)
     }
   })
-  it('shows native geometry and original image format instead of GPT controls', () => {
-    const html = renderToStaticMarkup(<InputParamsPanel {...props('grok')} />)
-    expect(html).toContain('分辨率')
-    expect(html).toContain('比例')
-    expect(html).toContain('1K')
-    expect(html).toContain('2K')
-    expect(html).toContain('接口原始格式')
-    expect(html).not.toContain('4K')
-    expect(html).not.toContain('质量')
-    expect(html).not.toContain('压缩率')
-    expect(html).not.toContain('审核')
-    expect(html).not.toContain('透明背景')
+
+  it.each(['grok', 'openai'])('受限 %s 通道保留格式、压缩、审核和透明背景，但不可选择', (provider) => {
+    const value = props(provider)
+    value.activeProfile.codexCli = provider === 'openai'
+    const container = markup(value)
+    for (const label of ['格式', '审核', '透明背景']) expect(control(container, label).disabled).toBe(true)
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="0-100"]')?.disabled).toBe(true)
+    expect(container.textContent).toContain('WebP')
+    expect(container.textContent).toContain('接口原始格式')
   })
 
-  it('preserves the GPT size, quality and output format controls', () => {
-    const html = renderToStaticMarkup(<InputParamsPanel {...props('openai')} />)
-    expect(html).toContain('尺寸')
-    expect(html).toContain('质量')
-    expect(html).toContain('WebP')
-    expect(html).not.toContain('接口原始格式')
-  })
-
-  it('offers only 2.0 quality and adds its wide ratios', () => {
+  it('Grok 旧模型与 2.0 展示相同选项，按模型禁用质量、比例和 4K', () => {
     const value = props('grok')
+    const legacy = markup(value)
+    expect(control(legacy, '质量').querySelector<HTMLOptionElement>('option[value="medium"]')?.disabled).toBe(true)
+    expect(control(legacy, '比例').querySelector<HTMLOptionElement>('option[value="21:9"]')?.disabled).toBe(true)
     value.activeProfile.model = 'grok-imagine-image-2.0'
-    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
-    expect(html).toContain('auto / low / medium')
-    expect(html).toContain('21:9')
-    expect(html).toContain('5:2')
-    expect(html).toContain('生成张数')
-    expect(html).toContain('max="10"')
-    expect(html).not.toContain('high')
+    const modern = markup(value)
+    expect(control(modern, '质量').querySelector<HTMLOptionElement>('option[value="medium"]')?.disabled).toBe(false)
+    expect(control(modern, '质量').querySelector<HTMLOptionElement>('option[value="high"]')?.disabled).toBe(true)
+    expect(control(modern, '比例').querySelector<HTMLOptionElement>('option[value="21:9"]')?.disabled).toBe(false)
+    expect(control(modern, '分辨率档位').querySelector<HTMLOptionElement>('option[value="4k"]')?.disabled).toBe(true)
   })
 
-  it('keeps legacy quality wording and does not offer 2.0-specific controls', () => {
-    const value = props('grok')
-    value.activeProfile.model = 'grok-imagine-image-quality'
-    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
-    expect(html).toContain('迁移至 2.0 low')
-    expect(html).not.toContain('21:9')
-    expect(html).not.toContain('质量</span>')
-  })
-
-  it('shows composition guidance and original format for Codex', () => {
-    const value = props('openai')
-    value.activeProfile.codexCli = true
-    value.displaySize = '16:9'
-    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
-    expect(html).toContain('构图比例')
-    expect(html).toContain('接口原始格式')
-    expect(html).not.toContain('WebP')
-    expect(html).not.toContain('压缩率')
-  })
-
-  it('explains unknown model defaults and keeps Agent count automatic', () => {
+  it('未知模型使用自动参数，保留所有选项且 Agent 张数仍自动', () => {
     const value = props('openai')
     value.activeProfile.model = 'unconfirmed-image'
     value.agentAutoImageCount = true
     value.nInput = 'auto'
-    const html = renderToStaticMarkup(<InputParamsPanel {...value} />)
-    expect(html).toContain('参数能力尚未确认')
-    expect(html).toContain('value="auto"')
-    expect(html).not.toContain('max="10"')
-    expect(html).not.toContain('WebP')
+    const container = markup(value)
+    expect(container.textContent).toContain('参数能力尚未确认')
+    expect(control(container, '质量').querySelector<HTMLOptionElement>('option[value="high"]')?.disabled).toBe(true)
+    expect(container.querySelector<HTMLInputElement>('input[value="auto"]')?.disabled).toBe(true)
+    expect(container.querySelector('input[max="10"]')).toBeNull()
+  })
+
+  it('受限通道仍可操作本地去背景，支持的质量可选择，无效质量不会写入', () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const value = props('openai')
+    value.activeProfile.codexCli = true
+    value.transparentOutputAvailable = true
+    value.showTransparentOutputControl = true
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    try {
+      act(() => root.render(<InputParamsPanel {...value} />))
+      const background = control(container, '本地去背景')
+      expect(background.disabled).toBe(false)
+      act(() => { background.value = 'on'; background.dispatchEvent(new Event('change', { bubbles: true })) })
+      expect(value.setParams).toHaveBeenCalledWith(expect.objectContaining({ transparent_output: true }))
+      vi.mocked(value.setParams).mockClear()
+      const quality = control(container, '质量')
+      act(() => { quality.value = 'high'; quality.dispatchEvent(new Event('change', { bubbles: true })) })
+      expect(value.setParams).not.toHaveBeenCalled()
+      value.activeProfile.codexCli = false
+      act(() => root.render(<InputParamsPanel {...value} />))
+      act(() => { quality.value = 'high'; quality.dispatchEvent(new Event('change', { bubbles: true })) })
+      expect(value.setParams).toHaveBeenCalledWith({ quality: 'high' })
+    } finally { act(() => root.unmount()); vi.unstubAllGlobals() }
   })
 })

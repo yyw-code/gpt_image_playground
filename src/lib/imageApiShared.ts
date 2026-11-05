@@ -23,6 +23,10 @@ export interface CallApiOptions {
   skipCodexCliSizePrompt?: boolean
   /** 返回任务是否已失效；分批生成在提交下一批前检查，避免继续产生费用。 */
   isCancelled?: () => boolean
+  /** 外部任务取消信号；等待中的图片请求可立即退出队列。 */
+  signal?: AbortSignal
+  /** 单图请求进入队列或实际执行时通知页面，序号相对于本次请求。 */
+  onRequestState?: (event: { requestIndex: number; state: 'queued' | 'running' | 'finished'; position: number }) => void
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
@@ -215,6 +219,7 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
   return blobToDataUrl(blob, fallbackMime)
 }
 
+/** 读取接口错误；图片网关并发限制补充中文说明，并保留原始消息便于排查。 */
 export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
   const textResponse = response.clone()
@@ -225,6 +230,9 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
     else if (typeof errJson.error === 'string') errorMsg = errJson.error
     else if (errJson.message) errorMsg = errJson.message
+    if (errJson.error?.code === 'gateway_concurrency_limit' && String(errorMsg).includes('Image generation concurrency')) {
+      errorMsg = `图片生成通道繁忙，等待后仍未获得空位，请稍后手动重试。\n原始错误：${errorMsg}`
+    }
   } catch {
     try {
       errorMsg = await textResponse.text()

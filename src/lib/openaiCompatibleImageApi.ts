@@ -31,6 +31,7 @@ import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
 import { appendImageAspectRatioPrompt } from './size'
 import { IS_SITE_MODE } from './siteMode'
+import { enqueueImageRequest } from './imageRequestQueue'
 
 function getStreamPartialImages(profile: ApiProfile): number {
   return profile.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES
@@ -454,6 +455,7 @@ async function callImagesApi(opts: CallApiOptions, profile: ApiProfile): Promise
   return callImagesApiSingle(opts, profile)
 }
 
+/** 拆分目标张数，本站请求由共享队列执行；保留每个输出位置的错误。 */
 async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile, n: number): Promise<CallApiResult> {
   const singleOpts = {
     ...opts,
@@ -466,6 +468,7 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
   const results = await Promise.allSettled(
     Array.from({ length: n }).map((_, requestIndex) => callImagesApiSingle({
       ...singleOpts,
+      onRequestState: (event) => opts.onRequestState?.({ ...event, requestIndex }),
       onPartialImage: opts.onPartialImage
         ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
         : undefined,
@@ -477,6 +480,16 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
 
 /** 提交单次 Images 生图或编辑；构图提示与原生参数分别受通道能力约束。 */
 async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
+  if (!IS_SITE_MODE || profile.provider !== 'openai') return callImagesApiImmediate(opts, profile)
+  return enqueueImageRequest(() => callImagesApiImmediate(opts, profile), {
+    signal: opts.signal,
+    isCancelled: opts.isCancelled,
+    onState: (state, position) => opts.onRequestState?.({ requestIndex: 0, state, position }),
+  })
+}
+
+/** 获得执行槽位后提交 Images 请求，独立超时不包含页面排队时间。 */
+async function callImagesApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
   const aspectPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
     ? appendImageAspectRatioPrompt(originalPrompt, params.size)
@@ -993,6 +1006,7 @@ async function callCustomHttpImageApiConcurrent(
   return mergeConcurrentApiResults(results)
 }
 
+/** 拆分 Responses 图片请求并保留各输出位置，本站共享单图队列。 */
 async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const n = opts.params.n > 0 ? opts.params.n : 1
   if (n === 1) {
@@ -1001,6 +1015,8 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
 
   const promises = Array.from({ length: n }).map((_, requestIndex) => callResponsesImageApiSingle({
     ...opts,
+    params: { ...opts.params, n: 1 },
+    onRequestState: (event) => opts.onRequestState?.({ ...event, requestIndex }),
     onPartialImage: opts.onPartialImage
       ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
       : undefined,
@@ -1011,6 +1027,16 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
 
 /** 提交单次 Responses 图片工具请求；受限通道只补充构图提示，原生字段使用统一能力规则。 */
 async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
+  if (!IS_SITE_MODE || profile.provider !== 'openai') return callResponsesImageApiImmediate(opts, profile)
+  return enqueueImageRequest(() => callResponsesImageApiImmediate(opts, profile), {
+    signal: opts.signal,
+    isCancelled: opts.isCancelled,
+    onState: (state, position) => opts.onRequestState?.({ requestIndex: 0, state, position }),
+  })
+}
+
+/** 获得执行槽位后提交 Responses 图片工具，超时从实际启动开始。 */
+async function callResponsesImageApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
   const requestPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
     ? appendImageAspectRatioPrompt(prompt, params.size)

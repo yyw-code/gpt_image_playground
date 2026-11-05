@@ -11,6 +11,7 @@ import { cleanStaleAgentInputDrafts } from './lib/inputDraftState'
 import { normalizePersistedState } from './lib/persistedState'
 import { setPresetConfig } from './lib/presetConfig'
 import { FetchConnectError } from './lib/platform'
+import { enqueueImageRequest } from './lib/imageRequestQueue'
 vi.mock('./lib/db', () => {
   const tasks = new Map<string, TaskRecord>()
   const images = new Map<string, StoredImage>()
@@ -332,16 +333,15 @@ describe('task retry', () => {
     })
   })
 
-  it('creates a separate task for a failed one by default', async () => {
+  it('retries a failed task in place regardless of the legacy default setting', async () => {
     const failed = task({ status: 'error', error: '上次失败' })
     useStore.setState({ settings: { ...useStore.getState().settings, retryMode: DEFAULT_SETTINGS.retryMode }, tasks: [failed] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
 
     await retryTask(failed)
-    expect(useStore.getState().tasks).toHaveLength(2)
-    expect(useStore.getState().tasks[0].id).not.toBe(failed.id)
-    expect(useStore.getState().tasks[1]).toEqual(failed)
+    expect(useStore.getState().tasks).toHaveLength(1)
+    expect(useStore.getState().tasks[0]).toMatchObject({ id: failed.id, status: 'running', createdAt: failed.createdAt })
     request.resolve({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
   })
@@ -364,7 +364,7 @@ describe('task retry', () => {
     await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
   })
 
-  it('overwrites a successful task when retry mode allows any task', async () => {
+  it('creates a new group for a successful task even with the legacy overwrite setting', async () => {
     const original = task({ outputImages: ['old-output'], isFavorite: true })
     await putImage({ id: 'old-output', dataUrl: 'data:image/png;base64,old', source: 'generated', createdAt: 1 })
     useStore.setState({ settings: { ...useStore.getState().settings, alwaysShowRetryButton: true, retryMode: 'overwriteAll' }, tasks: [original] })
@@ -372,9 +372,10 @@ describe('task retry', () => {
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
 
     await retryTask(original)
-    expect(useStore.getState().tasks).toHaveLength(1)
-    expect(useStore.getState().tasks[0]).toMatchObject({ id: original.id, status: 'running', createdAt: original.createdAt, outputImages: [], isFavorite: true, elapsed: null })
-    await vi.waitFor(async () => expect(await getImage('old-output')).toBeUndefined())
+    expect(useStore.getState().tasks).toHaveLength(2)
+    expect(useStore.getState().tasks[0].id).not.toBe(original.id)
+    expect(useStore.getState().tasks[1]).toEqual(original)
+    expect(await getImage('old-output')).toBeDefined()
     request.resolve({ images: ['data:image/png;base64,new'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
     expect(useStore.getState().tasks[0].outputImages).toHaveLength(1)
@@ -500,6 +501,108 @@ describe('task retry', () => {
 
     newRequest.resolve({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
     await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it.each([undefined, 2])('partial retry only requests selected failed positions (%s) and preserves the original group', async (index) => {
+    const original = task({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'],
+      outputErrors: [{ requestIndex: 0, error: 'busy' }, { requestIndex: 2, error: 'busy' }],
+      actualParamsByImage: { 'old-output': { quality: 'medium', size: '1024x1024' } },
+      rawImageUrls: ['https://image.example/old'], favoriteCollectionIds: ['favorites'], isFavorite: true })
+    const other = task({ id: 'other' })
+    await putImage({ id: 'old-output', dataUrl: 'data:image/png;base64,old', source: 'generated', createdAt: 1 })
+    useStore.setState({ tasks: [other, original] })
+    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
+    vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
+    await retryTask(original, index)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    expect(vi.mocked(callImageApi).mock.calls[0][0].params.n).toBe(index === undefined ? 2 : 1)
+    expect(useStore.getState().tasks[1]).toMatchObject({ id: original.id, status: 'running', outputImages: ['old-output'], params: { n: 3 } })
+    await retryTask(original, index)
+    expect(callImageApi).toHaveBeenCalledOnce()
+    request.resolve({ images: ['data:image/png;base64,new'], actualParams: { quality: 'low' }, actualParamsList: [{ quality: 'low' }],
+      failedRequests: index === undefined ? [{ requestIndex: 0, error: 'still busy' }] : undefined })
+    await vi.waitFor(() => expect(useStore.getState().tasks[1].status).toBe('done'))
+    const result = useStore.getState().tasks[1]
+    expect(useStore.getState().tasks).toHaveLength(2)
+    expect(result).toMatchObject({ id: original.id, createdAt: original.createdAt, isFavorite: true, favoriteCollectionIds: ['favorites'], params: { n: 3 }, actualParams: { n: 2 } })
+    expect(result.outputImages[0]).toBe('old-output')
+    expect(result.outputImages).toHaveLength(2)
+    expect(result.outputErrors).toEqual([{ requestIndex: 0, error: index === undefined ? 'still busy' : 'busy' }])
+    expect(result.actualParamsByImage?.['old-output']).toEqual(original.actualParamsByImage?.['old-output'])
+    expect(result.actualParamsByImage?.[result.outputImages[1]].quality).toBe('low')
+    expect(result.rawImageUrls?.[0]).toBe('https://image.example/old')
+    expect(await getImage('old-output')).toBeDefined()
+    expect(useStore.getState().showToast).toHaveBeenCalledWith('生成完成：成功 2 张，失败 1 张', 'error')
+  })
+
+  it('keeps successes after partial retry fails completely, then fills the same record', async () => {
+    const original = task({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 0, error: 'busy' }, { requestIndex: 2, error: 'busy' }] })
+    useStore.setState({ tasks: [original] })
+    vi.mocked(callImageApi).mockRejectedValueOnce(new Error('still busy')).mockResolvedValueOnce({ images: ['data:image/png;base64,first', 'data:image/png;base64,third'], actualParams: {} })
+    await retryTask(original)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(useStore.getState().tasks[0].outputImages).toEqual(['old-output'])
+    expect(useStore.getState().tasks[0].outputErrors).toEqual([{ requestIndex: 0, error: 'still busy' }, { requestIndex: 2, error: 'still busy' }])
+    await retryTask(original, 1)
+    expect(callImageApi).toHaveBeenCalledOnce()
+    await retryTask(original)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(useStore.getState().tasks).toHaveLength(1)
+    expect(useStore.getState().tasks[0].outputImages[1]).toBe('old-output')
+    expect(useStore.getState().tasks[0].outputImages).toHaveLength(3)
+    expect(useStore.getState().tasks[0].outputErrors).toBeUndefined()
+  })
+
+  it('deleting a waiting task aborts its queue signal and ignores subsequent callbacks', async () => {
+    const original = task({ status: 'error' })
+    useStore.setState({ tasks: [original] })
+    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
+    vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
+    await retryTask(original)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    const opts = vi.mocked(callImageApi).mock.calls[0][0]
+    opts.onRequestState?.({ state: 'queued', requestIndex: 0, position: 1 })
+    expect(useStore.getState().tasks[0].generationProgress?.state).toBe('queued')
+    await removeTask(useStore.getState().tasks[0])
+    expect(opts.signal?.aborted).toBe(true)
+    expect(opts.isCancelled?.()).toBe(true)
+    opts.onRequestState?.({ state: 'running', requestIndex: 0, position: 0 })
+    request.reject(new Error('cancelled'))
+    await request.promise.catch(() => {})
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(useStore.getState().tasks).toEqual([])
+  })
+
+  it.each([true, false])('clearing data cancels waiting gallery requests only when tasks are selected (%s)', async (clearTasks) => {
+    const blocker = deferred<void>()
+    const first = enqueueImageRequest(() => blocker.promise)
+    const settled = deferred<void>()
+    const worker = vi.fn(async () => ({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] }))
+    vi.mocked(callImageApi).mockImplementationOnce((opts) => enqueueImageRequest(worker, {
+      signal: opts.signal, isCancelled: opts.isCancelled,
+    }).finally(() => settled.resolve()))
+    const original = task({ status: 'error' })
+    useStore.setState({ tasks: [original] })
+    let cancelled = false
+    try {
+      await retryTask(original)
+      await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+      await clearData({ clearTasks, clearConfig: !clearTasks })
+      const opts = vi.mocked(callImageApi).mock.calls[0][0]
+      cancelled = Boolean(opts.signal?.aborted && opts.isCancelled?.())
+    } finally {
+      blocker.resolve()
+      await first
+      await settled.promise
+    }
+    expect(cancelled).toBe(clearTasks)
+    expect(worker).toHaveBeenCalledTimes(clearTasks ? 0 : 1)
+    if (clearTasks) {
+      expect(useStore.getState().tasks).toEqual([])
+      expect(await getAllTasks()).toEqual([])
+    } else {
+      await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    }
   })
 
   it('shows a normal completion toast after retrying a batch task in place', async () => {
@@ -4546,6 +4649,7 @@ describe('agent built-in image tool failure', () => {
     await clearAgentConversations()
     vi.mocked(callAgentResponsesApi).mockReset()
     vi.mocked(callImageApi).mockReset()
+    vi.mocked(callBatchImageSingle).mockReset().mockImplementation(callBatchImageSingleImplementation)
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -4575,6 +4679,120 @@ describe('agent built-in image tool failure', () => {
       agentEditingRoundId: null,
       showToast: vi.fn(),
     })
+  })
+
+  it.each(['hybrid-single', 'hybrid-batch', 'native-batch'])('deleting a waiting Agent card skips its request and preserves other work (%s)', async (mode) => {
+    const imageProfile = createDefaultOpenAIProfile({ id: 'image-profile', apiKey: 'image-key', apiMode: 'images' })
+    const hybrid = mode !== 'native-batch'
+    const single = mode === 'hybrid-single'
+    useStore.setState({
+      settings: normalizeSettings({
+        ...useStore.getState().settings,
+        profiles: [responsesProfile, imageProfile], agentProfiles: undefined,
+        activeProfileId: responsesProfile.id, agentApiConfigMode: hybrid ? 'hybrid' : 'native',
+        agentTextProfileId: responsesProfile.id, agentImageProfileId: imageProfile.id,
+      }),
+    })
+    vi.mocked(callAgentResponsesApi)
+      .mockResolvedValueOnce({ text: '', images: [], outputItems: [{
+        type: 'function_call', name: single ? 'generate_image' : 'generate_image_batch', call_id: 'waiting-call',
+        arguments: JSON.stringify(single ? { id: 'deleted', prompt: 'deleted prompt' } : { images: [
+          { id: 'deleted', prompt: 'deleted prompt' }, { id: 'live', prompt: 'live prompt' },
+        ] }),
+      }] })
+      .mockResolvedValue({ text: 'complete', images: [], outputItems: [] })
+    const sent = vi.fn()
+    vi.mocked(callImageApi).mockImplementation((opts) => enqueueImageRequest(async () => {
+      sent(opts.prompt)
+      return { images: ['data:image/png;base64,live'], actualParams: {}, actualParamsList: [{}], revisedPrompts: [] }
+    }, { signal: opts.signal, isCancelled: opts.isCancelled }))
+    vi.mocked(callBatchImageSingle).mockImplementation((opts) => enqueueImageRequest(async () => {
+      sent(opts.prompt)
+      const image = { dataUrl: 'data:image/png;base64,live' }
+      await opts.onImageToolCompleted?.(image)
+      return { batchItemId: opts.batchItemId, image, error: null }
+    }, { signal: opts.signal, isCancelled: opts.isCancelled }))
+    const blocker = deferred<void>()
+    const first = enqueueImageRequest(() => blocker.promise)
+    try {
+      await submitAgentMessage()
+      await vi.waitFor(() => expect(hybrid ? callImageApi : callBatchImageSingle).toHaveBeenCalledTimes(single ? 1 : 2))
+      const deleted = useStore.getState().tasks.find((item) => item.prompt === 'deleted prompt')!
+      await removeTask(deleted)
+    } finally {
+      blocker.resolve()
+      await first
+    }
+    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
+    expect(sent.mock.calls.map(([prompt]) => prompt)).toEqual(single ? [] : ['live prompt'])
+    expect(useStore.getState().tasks).toHaveLength(single ? 0 : 1)
+    if (!single) expect(useStore.getState().tasks[0]).toMatchObject({ prompt: 'live prompt', status: 'done' })
+    vi.mocked(callBatchImageSingle).mockImplementation(callBatchImageSingleImplementation)
+  })
+
+  it.each(['clear', 'stop'])('cancels all waiting Agent requests when the round is cleared or stopped (%s)', async (action) => {
+    useStore.setState({ settings: { ...useStore.getState().settings, agentApiConfigMode: 'native' } })
+    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({ text: '', images: [], outputItems: [{
+      type: 'function_call', name: 'generate_image_batch', call_id: 'clear-waiting',
+      arguments: JSON.stringify({ images: [{ id: 'one', prompt: 'one' }, { id: 'two', prompt: 'two' }] }),
+    }] }).mockResolvedValue({ text: 'complete', images: [], outputItems: [] })
+    const sent = vi.fn()
+    const finished = vi.fn()
+    vi.mocked(callBatchImageSingle).mockImplementation((opts) => enqueueImageRequest(async () => {
+      sent()
+      return { batchItemId: opts.batchItemId, image: null, error: 'unexpected request' }
+    }, { signal: opts.signal, isCancelled: opts.isCancelled }).finally(finished))
+    const blocker = deferred<void>()
+    const first = enqueueImageRequest(() => blocker.promise)
+    try {
+      await submitAgentMessage()
+      await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalledTimes(2))
+      if (action === 'clear') await clearData({ clearTasks: true, clearConfig: false })
+      else stopAgentResponse()
+    } finally {
+      blocker.resolve()
+      await first
+    }
+    await vi.waitFor(() => expect(finished).toHaveBeenCalledTimes(2))
+    expect(sent).not.toHaveBeenCalled()
+    if (action === 'clear') {
+      expect(useStore.getState().tasks).toEqual([])
+      expect(useStore.getState().agentConversations).toEqual([])
+      expect(await getAllTasks()).toEqual([])
+      expect(await getAllAgentConversations()).toEqual([])
+    } else {
+      await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('error'))
+    }
+    vi.mocked(callBatchImageSingle).mockImplementation(callBatchImageSingleImplementation)
+  })
+
+  it('does not recreate Agent cards when clearing tasks during batch card creation', async () => {
+    useStore.setState({ settings: { ...useStore.getState().settings, agentApiConfigMode: 'native' } })
+    vi.mocked(callAgentResponsesApi).mockResolvedValueOnce({ text: '', images: [], outputItems: [{
+      type: 'function_call', name: 'generate_image_batch', call_id: 'creating-batch',
+      arguments: JSON.stringify({ images: [{ id: 'one', prompt: 'one' }, { id: 'two', prompt: 'two' }] }),
+    }] })
+    const db = await import('./lib/db')
+    const putTask = db.putTask
+    const pending = deferred<void>()
+    const putTaskSpy = vi.spyOn(db, 'putTask').mockImplementation(async (task) => {
+      const result = await putTask(task)
+      if (task.prompt === 'one' && task.status === 'running') await pending.promise
+      return result
+    })
+    try {
+      await submitAgentMessage()
+      await vi.waitFor(() => expect(useStore.getState().tasks).toHaveLength(1))
+      await clearData({ clearTasks: true, clearConfig: false })
+      pending.resolve()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(useStore.getState().tasks).toEqual([])
+      expect(await getAllTasks()).toEqual([])
+      expect(callBatchImageSingle).not.toHaveBeenCalled()
+    } finally {
+      pending.resolve()
+      putTaskSpy.mockRestore()
+    }
   })
 
   it('normalizes Agent image params with the Hybrid image profile', async () => {

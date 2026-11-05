@@ -8,6 +8,7 @@ import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_FAL_MODEL, DEFAULT_IMAGES_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { getTaskPromptText } from '../lib/promptImageMentions'
+import { getTaskGenerationLabel } from '../lib/taskProgress'
 import { CodeIcon, TransparentBgIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
@@ -60,7 +61,7 @@ function TaskActionButton({
   )
 }
 
-/** 展示任务结果、供应商原生参数及可选构图复杂度，保留历史任务操作入口。 */
+/** 展示任务结果和图片队列进度；失败补图保留成功封面，并区分重试与再生成入口。 */
 export default function TaskCard({
   task,
   onReuse,
@@ -303,7 +304,7 @@ export default function TaskCard({
   const showSwipeAction = swipeActionActive
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
-  const showRunningTimer = task.status === 'running' || isFalReconnecting || isCustomReconnecting
+  const showRunningTimer = task.status === 'running' && task.generationProgress?.state !== 'queued' || isFalReconnecting || isCustomReconnecting
   const swipeBgClass = showSwipeAction
     ? swipeStartedSelected
       ? 'bg-gray-500 dark:bg-gray-600'
@@ -426,7 +427,7 @@ export default function TaskCard({
               )}
             </>
           )}
-          {task.status === 'running' && (!streamPreviewSrc || !streamPreviewLoaded) && (
+          {task.status === 'running' && !thumbSrc && (!streamPreviewSrc || !streamPreviewLoaded) && (
             <div className="flex flex-col items-center gap-2">
               <svg
                 className="w-8 h-8 text-blue-400 animate-spin"
@@ -447,7 +448,7 @@ export default function TaskCard({
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                 />
               </svg>
-              <span className="text-xs text-gray-400 dark:text-gray-500">生成中...</span>
+              <span className="text-xs text-gray-400 dark:text-gray-500">{getTaskGenerationLabel(task)}</span>
             </div>
           )}
           {task.status === 'error' && isFalReconnecting && (
@@ -490,7 +491,7 @@ export default function TaskCard({
               </span>
             </div>
           )}
-          {task.status === 'done' && thumbSrc && (
+          {(task.status === 'done' || task.status === 'running') && thumbSrc && (
             <>
               <img
                 src={thumbSrc}
@@ -522,6 +523,7 @@ export default function TaskCard({
               />
             </svg>
           )}
+          {task.status === 'running' && thumbSrc && <span className="absolute bottom-1 left-1 right-1 rounded bg-black/70 p-1 text-center text-[10px] text-white">{getTaskGenerationLabel(task)}</span>}
           {/* 运行中显示耗时，完成后显示封面图比例与分辨率标签 */}
           <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
             {showRunningTimer || task.status !== 'done' || !coverRatio || !coverSize ? (
@@ -529,7 +531,7 @@ export default function TaskCard({
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                {duration}
+                {task.generationProgress?.state === 'queued' ? '排队中' : duration}
               </span>
             ) : (
               <>
@@ -657,9 +659,9 @@ export default function TaskCard({
               onTouchEnd={(e) => e.stopPropagation()}
               onTouchCancel={(e) => e.stopPropagation()}
             >
-              {((task.status === 'error' && !isFalReconnecting && !isCustomReconnecting) || (task.status === 'done' && settings.alwaysShowRetryButton)) && (
+              {((task.status === 'error' && !isFalReconnecting && !isCustomReconnecting) || (task.status === 'done' && (hasPartialOutputFailure || settings.alwaysShowRetryButton))) && (
                 <TaskActionButton
-                  tooltip="重试任务"
+                  tooltip={hasPartialOutputFailure ? `重试失败的 ${outputErrorCount} 张` : task.status === 'done' ? '再生成一组' : '重试任务'}
                   onClick={() => retryTask(task)}
                   className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
                 >

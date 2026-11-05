@@ -3,7 +3,7 @@ import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, DEFAULT_IMAGES_MODEL, DEFAULT_SETTINGS as APP_DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { normalizePersistedState } from './persistedState'
 import { callImageApi } from './api'
-import { maybeAppendImageToolDroppedHint, maybeAppendStreamingHint } from './imageApiShared'
+import { getApiErrorMessage, maybeAppendImageToolDroppedHint, maybeAppendStreamingHint } from './imageApiShared'
 
 // 普通 API 契约测试显式关闭 Codex；兼容模式用例单独开启，避免依赖产品默认开关。
 const DEFAULT_SETTINGS = normalizeSettings({
@@ -12,6 +12,12 @@ const DEFAULT_SETTINGS = normalizeSettings({
 })
 
 describe('API error hints', () => {
+  it('explains the image concurrency limit in Chinese while preserving the original error', async () => {
+    const message = 'Image generation concurrency limit exceeded'
+    const result = await getApiErrorMessage(new Response(JSON.stringify({ error: { code: 'gateway_concurrency_limit', message } }), { status: 429 }))
+    expect(result).toContain('图片生成通道繁忙')
+    expect(result).toContain(message)
+  })
   it.each([false, true])('uses the transparent background hint when streaming is %s', (streamImages) => {
     const message = 'Transparent background is not supported for this model.'
 

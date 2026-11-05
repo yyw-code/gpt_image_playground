@@ -8,6 +8,7 @@ import { normalizeResponsesOutputItems } from './responsesOutputState'
 import { isEventStreamResponse, readJsonServerSentEvents, throwIfAborted } from './serverSentEvents'
 import { appendImageAspectRatioPrompt, getImageAspectRatioInstruction } from './size'
 import { IS_SITE_MODE } from './siteMode'
+import { enqueueImageRequest } from './imageRequestQueue'
 
 export interface AgentApiResultImage {
   toolCallId?: string
@@ -586,8 +587,14 @@ async function parseAgentStreamResponse(
   }
 }
 
-/** 请求 Agent 对话及工具调用，附带所选画幅的提示词策略；外站配置在上传或调用模型前直接拒绝。 */
-export async function callAgentResponsesApi(opts: {
+/** 原生 Agent 带图片工具的请求共享图片队列；混合模式纯文本推理不占图片槽位。 */
+export async function callAgentResponsesApi(opts: Parameters<typeof callAgentResponsesImmediate>[0]): Promise<AgentApiResult> {
+  if (!IS_SITE_MODE || opts.profile.provider !== 'openai' || opts.settings.agentApiConfigMode === 'hybrid') return callAgentResponsesImmediate(opts)
+  return enqueueImageRequest(() => callAgentResponsesImmediate(opts), { signal: opts.signal })
+}
+
+/** 实际发送 Agent 对话与工具调用，获得槽位后开始超时；发送前校验本站连接。 */
+async function callAgentResponsesImmediate(opts: {
   settings: AppSettings
   profile: ApiProfile
   imageProfile?: ApiProfile
@@ -729,9 +736,15 @@ export interface BatchImageCallResult {
 }
 
 /**
- * 使用 Responses API 生成一张批量图片，补充构图引导，并按图片模型和通道筛选原生字段。
+ * 使用 Responses API 生成一张批量图片；站点出队前检查任务是否已取消，避免发送已删除卡片的请求。
  */
-export async function callBatchImageSingle(opts: {
+export async function callBatchImageSingle(opts: Parameters<typeof callBatchImageSingleImmediate>[0]): Promise<BatchImageCallResult> {
+  if (!IS_SITE_MODE || opts.profile.provider !== 'openai') return callBatchImageSingleImmediate(opts)
+  return enqueueImageRequest(() => callBatchImageSingleImmediate(opts), { signal: opts.signal, isCancelled: opts.isCancelled, onState: opts.onRequestState })
+}
+
+/** 获得页面图片槽位后执行 Agent 单图工具，保留既有回调和独立超时。 */
+async function callBatchImageSingleImmediate(opts: {
   profile: ApiProfile
   params: TaskParams
   batchItemId: string
@@ -740,6 +753,8 @@ export async function callBatchImageSingle(opts: {
   referenceIds?: string[]
   allowPromptRewrite?: boolean
   signal?: AbortSignal
+  isCancelled?: () => boolean
+  onRequestState?: (state: 'queued' | 'running' | 'finished', position: number) => void
   onImageToolStarted?: () => void | Promise<void>
   onPartialImage?: (event: { image: string; partialImageIndex?: number }) => void | Promise<void>
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>

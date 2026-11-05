@@ -224,41 +224,24 @@ export default function GeneralSettingsTab({
         </div>
         <div className="block">
           <div className="mb-1 flex items-center justify-between">
-            <span className="block text-sm text-gray-600 dark:text-gray-300">成功任务仍然展示重试按钮</span>
+            <span className="block text-sm text-gray-600 dark:text-gray-300">成功任务显示再生成按钮</span>
             <button
               type="button"
               onClick={() => commitSettings({ ...draft, alwaysShowRetryButton: !draft.alwaysShowRetryButton })}
               className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${draft.alwaysShowRetryButton ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
               role="switch"
               aria-checked={draft.alwaysShowRetryButton}
-              aria-label="成功任务仍然展示重试按钮"
+              aria-label="成功任务显示再生成按钮"
             >
               <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${draft.alwaysShowRetryButton ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
             </button>
           </div>
           <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-            开启后，即使任务成功生成，也会在任务卡片上显示重试按钮。
+            开启后，成功任务显示“再生成一组”；失败任务始终可以重试。
           </div>
         </div>
         <div className="block">
-          <div className="mb-1 flex items-center justify-between gap-3">
-            <span className="block text-sm text-gray-600 dark:text-gray-300">重试方式</span>
-            <div className="w-32 shrink-0">
-              <Select
-                value={draft.retryMode}
-                onChange={(val) => commitSettings({ ...draft, retryMode: val as AppSettings['retryMode'] })}
-                options={[
-                  { label: '新建任务', value: 'new' },
-                  { label: '覆盖失败任务', value: 'overwriteFailed' },
-                  ...(draft.alwaysShowRetryButton ? [{ label: '覆盖任何任务', value: 'overwriteAll' }] : []),
-                ]}
-                className="w-full px-3 py-1.5 rounded-xl border border-transparent bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.07] dark:hover:bg-white/[0.1] text-xs transition-all duration-200 text-gray-700 dark:text-gray-200 outline-none"
-              />
-            </div>
-          </div>
-          <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-            覆盖时保留原任务的创建时间和收藏，清空旧的结果和耗时后重新生成；重试 Agent 对话中的图片卡片时，始终新建任务。
-          </div>
+          <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">画廊失败任务在原记录重试，保留创建时间、收藏和列表位置；多图仅补失败位置，成功图片保留。成功任务“再生成一组”会新建记录；Agent 图片卡片重试仍新建任务。</div>
         </div>
         <div className="block">
           <div className="mb-1 flex items-center justify-between">

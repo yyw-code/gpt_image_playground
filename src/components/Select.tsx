@@ -8,6 +8,8 @@ import { useTooltip } from '../hooks/useTooltip'
 interface Option {
   label: string
   value: string | number
+  disabled?: boolean
+  disabledReason?: string
   /** 选项文字的样式，如用对应字体渲染字体名 */
   style?: CSSProperties
   variant?: 'action' | 'danger'
@@ -34,6 +36,7 @@ interface SelectProps {
   menuClassName?: string
 }
 
+/** 展示可选值；不支持的选项保留可见，并阻止点击选择。 */
 export default function Select({ value, onChange, onReorder, options, disabled, className, onOpenChange, showValueTooltips = false, prefix, menuClassName }: SelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuMaxHeight, setMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
@@ -218,6 +221,8 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
             <div
               key={option.value}
               data-option-value={String(option.value)}
+              aria-disabled={option.disabled || undefined}
+              title={option.disabledReason}
               draggable={option.draggable}
               onDragStart={(e) => {
                 if (!option.draggable) return
@@ -391,6 +396,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
               }}
               onTouchCancel={clearTouchDrag}
               onClick={(e) => {
+                if (option.disabled) return
                 if ((e.target as HTMLElement).closest('button, [data-drag-handle]')) return
                 e.preventDefault()
                 onChange(option.value)
@@ -408,7 +414,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
                 clearOptionTooltipTimer()
                 setHoveredOptionTooltip(null)
               }}
-              className={`relative flex min-h-9 cursor-pointer items-center justify-between gap-2 px-3 py-2 text-xs transition-colors ${
+              className={`relative flex min-h-9 ${option.disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'} items-center justify-between gap-2 px-3 py-2 text-xs transition-colors ${
                 draggedValue === option.value
                   ? 'opacity-40 bg-gray-100 dark:bg-white/[0.04]'
                   : option.variant === 'action'
@@ -442,7 +448,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
                     <DragHandleIcon className="h-3.5 w-3.5" />
                   </div>
                 )}
-                <span className="min-w-0 truncate" style={option.style}>{option.label}</span>
+                <span className="min-w-0" style={option.style}><span className="block truncate">{option.label}</span>{option.disabled && option.disabledReason && <span className="block text-[10px] font-normal">{option.disabledReason}</span>}</span>
               </div>
               {option.actions?.length ? (
                 <span className="ml-auto flex shrink-0 items-center gap-1">

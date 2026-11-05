@@ -22,6 +22,7 @@ export function createTaskErrorPatch(task: Pick<TaskRecord, 'createdAt' | 'start
   }
 }
 
+/** 刷新后将未完成的同步任务标为中断，清理页面队列进度，保留已保存图片供手动补图。 */
 export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: number) {
   const interruptedTasks: TaskRecord[] = []
   const updatedTasks = tasks.map((task) => {
@@ -31,6 +32,7 @@ export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: numb
     const updated: TaskRecord = {
       ...task,
       ...createTaskErrorPatch(task, '请求中断', now),
+      generationProgress: undefined,
       falRecoverable: false,
       elapsed: Math.max(0, now - (task.startedAt ?? task.createdAt)),
     }

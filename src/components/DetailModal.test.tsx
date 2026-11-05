@@ -19,12 +19,14 @@ vi.mock('../lib/imageCache', () => ({
 }))
 
 import DetailModal from './DetailModal'
+import { retryTask } from '../store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: ReturnType<typeof createRoot> | null = null
 let task: TaskRecord
 
 beforeEach(() => {
+  vi.mocked(retryTask).mockClear()
   task = {
     id: 'task', prompt: 'Draw a cat.', params: { ...DEFAULT_PARAMS, size: '1440x2560' },
     inputImageIds: [], maskTargetImageId: null, maskImageId: null, outputImages: ['output'],
@@ -63,6 +65,27 @@ function loadImage(image: HTMLImageElement, width: number, height: number) {
 }
 
 describe('详情原图尺寸与比例', () => {
+  it.each(['done', 'running'] as const)('部分失败 %s 保留原图，按原槽位重试且运行时禁用重复提交', async (status) => {
+    task.params.n = 3
+    task.outputErrors = [{ requestIndex: 1, error: 'busy' }, { requestIndex: 2, error: 'busy' }]
+    task.status = status
+    task.generationProgress = status === 'running' ? { state: 'queued', requestIndex: 1, queuePosition: 2 } : undefined
+    const { container } = await renderDetail()
+    if (status === 'running') expect(container.textContent).toContain('第 2 张排队中')
+    const retryAll = [...container.querySelectorAll('button')].find((button) => button.textContent === '重试失败的 2 张')!
+    expect(retryAll.disabled).toBe(status === 'running')
+    act(() => retryAll.click())
+    expect(retryTask).toHaveBeenCalledTimes(status === 'running' ? 0 : 1)
+    expect(mocks.state.setDetailTaskId).not.toHaveBeenCalled()
+    vi.mocked(retryTask).mockClear()
+    act(() => container.querySelector('path[d="M9 5l7 7-7 7"]')!.closest('button')!.click())
+    const retryOne = [...container.querySelectorAll('button')].find((button) => button.textContent === '重试这张')!
+    expect(retryOne.disabled).toBe(status === 'running')
+    act(() => retryOne.click())
+    if (status === 'running') expect(retryTask).not.toHaveBeenCalled()
+    else expect(retryTask).toHaveBeenCalledExactlyOnceWith(task, 1)
+  })
+
   it.each([false, true])('同一多图任务可切换查看全部结果，部分失败=%s', async (partialFailure) => {
     task.params.n = 3
     task.outputImages = partialFailure ? ['output', 'output-3'] : ['output', 'output-2', 'output-3']
