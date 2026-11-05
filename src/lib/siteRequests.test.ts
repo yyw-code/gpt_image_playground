@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 
-const mocks = vi.hoisted(() => ({ fetch: vi.fn(), image: vi.fn() }))
+const mocks = vi.hoisted(() => ({ fetch: vi.fn(), image: vi.fn().mockResolvedValue({ images: ['data:image/png;base64,iVBORw0KGgo='] }) }))
 vi.mock('./platform', () => ({ isTauri: false, apiFetch: mocks.fetch }))
 vi.mock('./openaiCompatibleImageApi', () => ({ callOpenAICompatibleImageApi: mocks.image }))
 vi.mock('./falAiImageApi', () => ({ callFalAiImageApi: mocks.image }))
@@ -60,8 +60,9 @@ describe('本站请求边界', () => {
     const profile = { ...site, id: 'own-copy', apiKey: 'own-key' }
     const settings = normalizeSettings({ profiles: [profile] })
     const { callImageApi } = await import('./api')
-    await callImageApi({ settings, prompt: 'test', params: DEFAULT_PARAMS, inputImageDataUrls: [] })
+    const result = await callImageApi({ settings, prompt: 'test', params: DEFAULT_PARAMS, inputImageDataUrls: [] })
     expect(mocks.image).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: 'own-copy', baseUrl: site.baseUrl }), null)
+    expect(result.actualParams).toMatchObject({ n: 1, output_format: 'png' })
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
 })

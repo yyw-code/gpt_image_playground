@@ -16,11 +16,11 @@ vi.mock('./paramPopoverChip', () => ({
 }))
 vi.mock('./buttonTooltip', () => ({ default: () => null }))
 
-/** 提供参数面板的空交互回调，仅检查用户可见的能力边界。 */
+/** 提供普通 API 的空交互夹具；Codex 用例显式开启开关，独立检查能力边界。 */
 function props(provider: string): ComponentProps<typeof InputParamsPanel> {
   const hint = { visible: false, show: vi.fn(), hide: vi.fn(), clearTimer: vi.fn(), startTouch: vi.fn() }
   return {
-    params: { ...DEFAULT_PARAMS }, setParams: vi.fn(), activeProfile: createDefaultOpenAIProfile({ provider }),
+    params: { ...DEFAULT_PARAMS }, setParams: vi.fn(), activeProfile: createDefaultOpenAIProfile({ provider, codexCli: false }),
     modelOptions: [{ label: 'test-model', value: 'test-model' }], onModelChange: vi.fn(),
     isFalProvider: false, isFalTextToImage: false, displaySize: 'auto',
     qualityOptions: [{ label: 'high', value: 'high' }], selectClass: '',

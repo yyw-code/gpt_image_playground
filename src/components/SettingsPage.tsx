@@ -122,6 +122,7 @@ function saveCopyImportUrlOptions(options: CopyImportUrlOptions) {
   }
 }
 
+/** 按当前默认值识别未编辑的新配置，保留已有配置清理空白草稿的行为。 */
 function isPristineNewOpenAIProfile(profile: ApiProfile) {
   const defaultProfile = createDefaultOpenAIProfile({ id: profile.id, name: '新配置' })
   return profile.name === '新配置' &&
@@ -133,7 +134,7 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.timeout === DEFAULT_SETTINGS.timeout &&
     profile.apiMode === 'images' &&
     profile.reasoningEffort === undefined &&
-    profile.codexCli === false &&
+    profile.codexCli === defaultProfile.codexCli &&
     profile.apiProxy === defaultProfile.apiProxy &&
     profile.streamImages === defaultProfile.streamImages &&
     profile.streamPartialImages === defaultProfile.streamPartialImages &&

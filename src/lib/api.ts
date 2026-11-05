@@ -11,7 +11,7 @@ import { getBase64ImageFormat, normalizeBase64Image } from './imageApiShared'
 export type { CallApiOptions, CallApiResult } from './imageApiShared'
 export { normalizeBaseUrl } from './devProxy'
 
-/** 校验连接与供应商限制，按同一能力规则提交请求并保留真实返回格式、张数。 */
+/** 校验连接与供应商限制，过滤各 Codex 通道的原生透明背景，并保留真实返回格式、张数。 */
 export async function callImageApi(opts: CallApiOptions): Promise<CallApiResult> {
   const profile = getActiveApiProfile(opts.settings)
   const siteError = getSiteProfileError(profile)
@@ -26,9 +26,8 @@ export async function callImageApi(opts: CallApiOptions): Promise<CallApiResult>
   const result = await callOpenAICompatibleImageApi({
     ...opts,
     params,
-    nativeTransparentBackground: profile.provider === 'openai'
-      ? getImageParameterCapabilities(profile).nativeOutput && params.output_format !== 'jpeg' && opts.nativeTransparentBackground
-      : profile.provider === 'grok' ? false : opts.nativeTransparentBackground,
+    nativeTransparentBackground: getImageParameterCapabilities(profile).nativeOutput
+      && (profile.provider !== 'openai' || params.output_format !== 'jpeg') && opts.nativeTransparentBackground,
   }, profile, getCustomProviderDefinition(opts.settings, profile.provider))
   if (profile.provider !== 'openai') return result
   const actualParamsList = result.images.map((image, index) => {

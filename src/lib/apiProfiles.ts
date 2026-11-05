@@ -373,6 +373,7 @@ export function normalizeCustomProviderDefinitions(input: unknown): CustomProvid
     .filter((item): item is CustomProviderDefinition => Boolean(item))
 }
 
+/** 创建默认启用 Codex 兼容的 OpenAI 配置；显式参数和部署 URL 可覆盖默认开关。 */
 export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
   const apiMode = overrides.apiMode ?? DEFAULT_API_URL_PATCH?.apiMode ?? 'images'
   const streamImages = overrides.streamImages ?? DEFAULT_API_URL_PATCH?.streamImages ?? getDefaultStreamImages('openai', apiMode)
@@ -387,7 +388,7 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
     imageGenerationModel: DEFAULT_API_URL_PATCH?.imageGenerationModel ?? DEFAULT_IMAGES_MODEL,
     timeout: DEFAULT_API_TIMEOUT,
     reasoningEffort: DEFAULT_API_URL_PATCH?.reasoningEffort,
-    codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? false,
+    codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? true,
     apiProxy: DEFAULT_OPENAI_API_PROXY,
     streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,
     transparentBackgroundMethod: DEFAULT_API_URL_PATCH?.transparentBackgroundMethod ?? 'api',
@@ -1052,6 +1053,7 @@ export function validateApiProfile(profile: ApiProfile): string | null {
   return null
 }
 
+/** 判断是否为未编辑的默认配置，用于在首次导入部署预置时替换初始项。 */
 function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
   return profile.id === DEFAULT_OPENAI_PROFILE_ID &&
     profile.name === '默认' &&
@@ -1063,7 +1065,7 @@ function isDefaultOpenAIProfile(profile: ApiProfile): boolean {
     profile.timeout === DEFAULT_API_TIMEOUT &&
     profile.apiMode === 'images' &&
     profile.reasoningEffort === undefined &&
-    profile.codexCli === false &&
+    profile.codexCli === createDefaultOpenAIProfile().codexCli &&
     profile.apiProxy === DEFAULT_OPENAI_API_PROXY &&
     profile.streamImages === false &&
     profile.streamPartialImages === DEFAULT_STREAM_PARTIAL_IMAGES &&
@@ -1512,7 +1514,7 @@ export const DEFAULT_SETTINGS: AppSettings = normalizeSettings({
   model: DEFAULT_API_URL_PATCH?.model ?? (DEFAULT_API_URL_PATCH?.apiMode === 'responses' ? DEFAULT_RESPONSES_MODEL : DEFAULT_IMAGES_MODEL),
   timeout: DEFAULT_API_TIMEOUT,
   apiMode: DEFAULT_API_URL_PATCH?.apiMode ?? 'images',
-  codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? false,
+  codexCli: DEFAULT_API_URL_PATCH?.codexCli ?? true,
   apiProxy: DEFAULT_OPENAI_API_PROXY,
   streamImages: DEFAULT_API_URL_PATCH?.streamImages ?? getDefaultStreamImages('openai', DEFAULT_API_URL_PATCH?.apiMode ?? 'images'),
   streamPartialImages: DEFAULT_API_URL_PATCH?.streamPartialImages ?? DEFAULT_STREAM_PARTIAL_IMAGES,

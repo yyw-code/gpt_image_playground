@@ -29,7 +29,7 @@ import {
 import { getImageGenerationModel, getImageRequestParameters } from './imageModels'
 import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
-import { appendImageAspectRatioPrompt, prependCodexCliSizePrompt } from './size'
+import { appendImageAspectRatioPrompt } from './size'
 import { IS_SITE_MODE } from './siteMode'
 
 function getStreamPartialImages(profile: ApiProfile): number {
@@ -657,25 +657,26 @@ function resolveTemplateValue(value: unknown, context: Record<string, unknown>):
   return value
 }
 
-/** 组装自定义供应商模板上下文；Codex 比例提示与原有参数兼容策略一起生效。 */
+/** 组装自定义供应商模板上下文；Codex 仅附带构图提示，模板中省略隐藏的原生参数。 */
 function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) {
-  const sizePrompt = profile.codexCli && !opts.skipCodexCliSizePrompt
-    ? prependCodexCliSizePrompt(opts.prompt, opts.params.size)
-    : opts.prompt
   const aspectPrompt = profile.codexCli
-    ? appendImageAspectRatioPrompt(sizePrompt, opts.params.size)
-    : sizePrompt
+    ? appendImageAspectRatioPrompt(opts.prompt, opts.params.size)
+    : opts.prompt
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
     : aspectPrompt
   const params = {
     ...opts.params,
-    ...(profile.codexCli ? { size: undefined, quality: undefined } : {}),
+    ...(opts.nativeTransparentBackground ? { background: 'transparent' } : {}),
+    ...(profile.codexCli ? {
+      size: undefined, quality: undefined, complexity: undefined,
+      output_format: undefined, output_compression: undefined, moderation: undefined,
+      background: undefined, transparent_output: undefined,
+    } : {}),
     ...(profile.provider === 'grok' ? {
       quality: profile.model === 'grok-imagine-image-2.0' ? opts.params.quality : undefined,
       aspect_ratio: opts.params.aspect_ratio === 'auto' ? undefined : opts.params.aspect_ratio,
     } : {}),
-    ...(opts.nativeTransparentBackground ? { background: 'transparent' } : {}),
   }
 
   return {

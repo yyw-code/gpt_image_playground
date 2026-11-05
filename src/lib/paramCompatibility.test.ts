@@ -5,7 +5,7 @@ import { getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSet
 
 describe('parameter compatibility', () => {
   it('keeps valid 2.6 complexity and clears it from state after changing the model', () => {
-    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.6-flare' })
+    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.6-flare', codexCli: false })
     const current = { ...DEFAULT_PARAMS, complexity: 'low' as const }
     expect(normalizeParamsForSettings(current, normalizeSettings({ profiles: [profile] })).complexity).toBe('low')
     const next = normalizeParamsForSettings(current, normalizeSettings({ profiles: [{ ...profile, model: 'gpt-image-2.5-flare' }] }))
@@ -19,7 +19,7 @@ describe('parameter compatibility', () => {
   })
 
   it('clears controls unsupported by an unknown OpenAI alias', () => {
-    const settings = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ model: 'vendor-image' })] })
+    const settings = normalizeSettings({ profiles: [createDefaultOpenAIProfile({ model: 'vendor-image', codexCli: false })] })
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, size: '3840x2160', quality: 'max', output_format: 'webp', output_compression: 80, transparent_output: true }, settings)).toMatchObject({ size: 'auto', quality: 'auto', output_format: 'png', output_compression: null, transparent_output: false })
   })
 
@@ -112,6 +112,20 @@ describe('parameter compatibility', () => {
     })
   })
 
+  it.each(['api', 'local'] as const)('clears hidden custom Codex controls while preserving only %s background behavior', (transparentBackgroundMethod) => {
+    const profile = createDefaultOpenAIProfile({ provider: 'custom-codex', codexCli: true, transparentBackgroundMethod })
+    const settings = normalizeSettings({
+      profiles: [profile],
+      customProviders: [{ id: 'custom-codex', name: 'Custom Codex', submit: { path: 'images/generations', body: { background: '$params.background' } } }],
+    })
+    const params = { ...DEFAULT_PARAMS, size: '1280x720', quality: 'max' as const, output_format: 'webp' as const, output_compression: 80, moderation: 'low' as const, transparent_output: true }
+    expect(normalizeParamsForSettings(params, settings)).toMatchObject({
+      size: '1280x720', quality: 'auto', output_format: 'png', output_compression: null,
+      moderation: 'auto', transparent_output: transparentBackgroundMethod === 'local',
+    })
+    expect(params).toMatchObject({ output_format: 'webp', output_compression: 80, transparent_output: true })
+  })
+
   it('does not apply Codex CLI parameter limits to fal.ai', () => {
     const profile = createDefaultFalProfile({ codexCli: true })
     const settings = normalizeSettings({
@@ -125,7 +139,7 @@ describe('parameter compatibility', () => {
   })
 
   it.each(['gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'] as const)('keeps 2.5 quality levels for %s', (model) => {
-    const profile = createDefaultOpenAIProfile({ model })
+    const profile = createDefaultOpenAIProfile({ model, codexCli: false })
     const settings = normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] })
 
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'xhigh' }, settings).quality).toBe('xhigh')
@@ -141,7 +155,7 @@ describe('parameter compatibility', () => {
   })
 
   it.each(['vendor/gpt-image-2.5-custom', 'my-gpt-image-2.5-proxy'])('keeps 2.5 quality levels for a custom provider model %s', (model) => {
-    const profile = { ...createDefaultOpenAIProfile({ model }), provider: 'custom-provider' }
+    const profile = { ...createDefaultOpenAIProfile({ model, codexCli: false }), provider: 'custom-provider' }
     const settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
       customProviders: [{ id: 'custom-provider', name: 'Custom Provider', submit: { path: 'images/generations' } }],
@@ -154,7 +168,7 @@ describe('parameter compatibility', () => {
   })
 
   it('falls back to high when an older image model receives a 2.5 quality level', () => {
-    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2' })
+    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2', codexCli: false })
     const settings = normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile] })
 
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'max' }, settings).quality).toBe('high')

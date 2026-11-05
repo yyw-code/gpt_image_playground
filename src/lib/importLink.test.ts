@@ -107,7 +107,7 @@ describe('describeImportLink', () => {
   it('展示值中的换行会被折叠，无法伪造确认框中的行', () => {
     const desc = describeImportLink(new URLSearchParams({ apiUrl: 'https://a.example.com/v1', profileName: 'A\nAPI Key：未包含\r\n模型：x' }), current())
     expect(desc.groups.map((group) => group.title)).toEqual(['新增配置「A API Key：未包含 模型：x」'])
-    expect(desc.groups[0].rows.map((item) => item.label)).toEqual(['API 地址', '模型', 'API Key'])
+    expect(desc.groups[0].rows.map((item) => item.label)).toEqual(['API 地址', '模型', 'Codex CLI 兼容模式', 'API Key'])
     // 任何展示文本中都不再含有换行、回车或 Tab
     expect(allText(desc)).not.toMatch(/\\[nrt]/)
   })

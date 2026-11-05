@@ -157,6 +157,30 @@ describe('normalizeSettings', () => {
 })
 
 describe('default API URL env', () => {
+  it('enables Codex compatibility for new defaults and preserves saved explicit switches', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_DEFAULT_API_URL', '')
+    const profiles = await import('./apiProfiles')
+    expect(profiles.createDefaultOpenAIProfile().codexCli).toBe(true)
+    expect(profiles.DEFAULT_SETTINGS.codexCli).toBe(true)
+    expect(profiles.DEFAULT_SETTINGS.profiles[0].codexCli).toBe(true)
+    expect(profiles.createDefaultOpenAIProfile({ codexCli: false }).codexCli).toBe(false)
+    for (const codexCli of [true, false]) {
+      expect(profiles.normalizeSettings({ profiles: [{ codexCli }] }).profiles[0].codexCli).toBe(codexCli)
+    }
+    expect(profiles.normalizeApiProfile({}).codexCli).toBe(false)
+    expect(profiles.normalizeApiProfile({ provider: 'grok' }).codexCli).toBe(false)
+    expect(profiles.createDefaultFalProfile().codexCli).toBe(false)
+  })
+
+  it('preserves an explicit deployment default that disables Codex compatibility', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_DEFAULT_API_URL', 'https://api.example.com/v1?codexCli=false')
+    const profiles = await import('./apiProfiles')
+    expect(profiles.createDefaultOpenAIProfile().codexCli).toBe(false)
+    expect(profiles.DEFAULT_SETTINGS.codexCli).toBe(false)
+  })
+
   it.each([undefined, 'runtime-image-model', ''])('uses runtime tool model %s only for new defaults, not old inputs', async (imageGenerationModel) => {
     vi.resetModules()
     const params = new URLSearchParams({ apiMode: 'responses' })

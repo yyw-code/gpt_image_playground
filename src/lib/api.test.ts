@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { createDefaultOpenAIProfile, DEFAULT_IMAGES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
+import { createDefaultOpenAIProfile, DEFAULT_IMAGES_MODEL, DEFAULT_SETTINGS as APP_DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { normalizePersistedState } from './persistedState'
 import { callImageApi } from './api'
 import { maybeAppendImageToolDroppedHint, maybeAppendStreamingHint } from './imageApiShared'
+
+// 普通 API 契约测试显式关闭 Codex；兼容模式用例单独开启，避免依赖产品默认开关。
+const DEFAULT_SETTINGS = normalizeSettings({
+  ...APP_DEFAULT_SETTINGS,
+  profiles: APP_DEFAULT_SETTINGS.profiles.map((profile) => ({ ...profile, codexCli: false })),
+})
 
 describe('API error hints', () => {
   it.each([false, true])('uses the transparent background hint when streaming is %s', (streamImages) => {
@@ -25,7 +31,7 @@ describe('callImageApi', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url).startsWith('data:')
       ? new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'Content-Type': 'image/png' } })
       : new Response(JSON.stringify({ complexity: 'medium', data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
-    const profile = createDefaultOpenAIProfile({ model: 'gpt-image-2.6-flare', streamImages: false })
+    const profile = createDefaultOpenAIProfile({ codexCli: false, model: 'gpt-image-2.6-flare', streamImages: false })
     const result = await callImageApi({ settings: normalizeSettings({ profiles: [profile] }), prompt: 'cup', params: { ...DEFAULT_PARAMS, quality: 'max', complexity: 'low', size: '1536x864' }, inputImageDataUrls: edit ? ['data:image/png;base64,iVBORw0KGgo='] : [] })
     const init = fetchMock.mock.calls.find(([url]) => String(url).includes(edit ? 'images/edits' : 'images/generations'))?.[1]
     const body = edit ? Object.fromEntries((init?.body as FormData).entries()) : JSON.parse(String(init?.body))
@@ -59,9 +65,56 @@ describe('callImageApi', () => {
     expect(body.has('image[]')).toBe(true)
   })
 
+  it.each([false, true])('omits hidden Codex parameters from custom provider requests for edit=%s', async (edit) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url).startsWith('data:')
+      ? new Response('image', { headers: { 'Content-Type': 'image/png' } })
+      : new Response(JSON.stringify({ data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
+    const mapping = {
+      path: 'images/generations',
+      body: {
+        model: '$profile.model', prompt: '$prompt', n: '$params.n',
+        size: '$params.size', quality: '$params.quality', complexity: '$params.complexity',
+        output_format: '$params.output_format', output_compression: '$params.output_compression',
+        moderation: '$params.moderation', background: '$params.background', transparent_output: '$params.transparent_output',
+      },
+      result: { b64JsonPaths: ['data.*.b64_json'] },
+    }
+    const profile = createDefaultOpenAIProfile({ provider: 'custom-codex', baseUrl: 'https://api.example.com/v1', codexCli: true, transparentBackgroundMethod: 'api' })
+    const settings = normalizeSettings({
+      profiles: [profile], allowPromptRewrite: true,
+      customProviders: [{
+        id: 'custom-codex', name: 'Custom Codex', submit: mapping,
+        editSubmit: { ...mapping, path: 'images/edits', contentType: 'multipart', files: [{ field: 'image[]', source: 'inputImages', array: true }] },
+      }],
+    })
+    await callImageApi({
+      settings, prompt: 'cup', nativeTransparentBackground: true,
+      params: { ...DEFAULT_PARAMS, size: '1280x720', quality: 'max', complexity: 'high', output_format: 'webp', output_compression: 80, moderation: 'low', transparent_output: true },
+      inputImageDataUrls: edit ? ['data:image/png;base64,iVBORw0KGgo='] : [],
+    })
+    const init = fetchMock.mock.calls.find(([url]) => String(url).includes(edit ? 'images/edits' : 'images/generations'))?.[1]
+    const body = edit ? Object.fromEntries((init?.body as FormData).entries()) : JSON.parse(String(init?.body))
+    expect(body).toMatchObject({ prompt: 'cup\n\nComposition: 16:9 aspect ratio, landscape canvas.', n: edit ? '1' : 1 })
+    for (const key of ['size', 'quality', 'complexity', 'output_format', 'output_compression', 'moderation', 'background', 'transparent_output']) expect(body).not.toHaveProperty(key)
+    if (edit) expect(body['image[]']).toBeInstanceOf(Blob)
+  })
+
+  it.each([1, 2, 10].flatMap((n) => [false, true].map((edit) => ({ n, edit }))))('honors Codex Images target count $n through single-image requests for edit=$edit', async ({ n, edit }) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url).startsWith('data:')
+      ? new Response('image', { headers: { 'Content-Type': 'image/png' } })
+      : new Response(JSON.stringify({ data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
+    const profile = createDefaultOpenAIProfile({ codexCli: true, streamImages: false })
+    const result = await callImageApi({ settings: normalizeSettings({ profiles: [profile] }), prompt: 'cup', params: { ...DEFAULT_PARAMS, n }, inputImageDataUrls: edit ? ['data:image/png;base64,iVBORw0KGgo='] : [] })
+    const submits = fetchMock.mock.calls.filter(([url]) => String(url).includes(edit ? 'images/edits' : 'images/generations'))
+    expect(submits).toHaveLength(n)
+    for (const [, init] of submits) expect(edit ? Number((init?.body as FormData).get('n') ?? 1) : JSON.parse(String(init?.body)).n ?? 1).toBe(1)
+    expect(result.images).toHaveLength(n)
+    expect(result.actualParams?.n).toBe(n)
+  })
+
   it('records a short native batch accurately without issuing replacement requests', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ n: 2, output_format: 'png', data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
-    const profile = createDefaultOpenAIProfile({ streamImages: false })
+    const profile = createDefaultOpenAIProfile({ codexCli: false, streamImages: false })
     const result = await callImageApi({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), prompt: 'cup', params: { ...DEFAULT_PARAMS, n: 2 }, inputImageDataUrls: [] })
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).n).toBe(2)
     expect(result.images).toHaveLength(1)
@@ -171,7 +224,7 @@ describe('callImageApi', () => {
     }))
 
     const profile = imageGenerationModel === DEFAULT_IMAGES_MODEL
-      ? createDefaultOpenAIProfile({ apiMode: 'responses', apiKey: 'test-key', streamImages: false })
+      ? createDefaultOpenAIProfile({ codexCli: false, apiMode: 'responses', apiKey: 'test-key', streamImages: false })
       : { apiMode: 'responses', apiKey: 'test-key', model: 'legacy-text-model', streamImages: false, ...(imageGenerationModel === undefined ? {} : { imageGenerationModel }) }
     const restored = normalizePersistedState({ settings: { profiles: [profile] } }, {
       settings: DEFAULT_SETTINGS,
@@ -1115,7 +1168,7 @@ describe('callImageApi', () => {
     for (const [, init] of fetchMock.mock.calls) {
       const body = JSON.parse(String((init as RequestInit).body))
       expect(body).toMatchObject({
-        prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
+        prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
         n: 1,
       })
       expect(body).not.toHaveProperty('size')
@@ -1256,11 +1309,11 @@ describe('callImageApi', () => {
     for (const [url, init] of submitCalls) {
       expect(url).toBe('https://api.example.com/v1/images/edits')
       const body = (init as RequestInit).body as FormData
-      expect(body.get('prompt')).toBe('Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.')
+      expect(body.get('prompt')).toBe('Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nComposition: 4:3 aspect ratio, landscape canvas.')
       expect(body.get('size')).toBeNull()
       expect(body.get('quality')).toBeNull()
       expect(body.get('n')).toBe('1')
-      expect(body.get('background')).toBe('transparent')
+      expect(body.get('background')).toBeNull()
     }
   })
 
@@ -1321,7 +1374,7 @@ describe('callImageApi', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const submitBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
     expect(submitBody).toMatchObject({
-      prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nGenerate at 1024x768 resolution. prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
+      prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
       n: 3,
     })
     expect(submitBody).not.toHaveProperty('size')

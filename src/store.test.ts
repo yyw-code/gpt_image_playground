@@ -546,7 +546,7 @@ describe('task retry', () => {
 })
 
 describe('aspect ratio revised prompt handling', () => {
-  const profile = createDefaultOpenAIProfile({ id: 'site-ratio', baseUrl: 'https://site.example/v1', apiKey: 'test-key', apiMode: 'responses' })
+  const profile = createDefaultOpenAIProfile({ id: 'site-ratio', baseUrl: 'https://site.example/v1', apiKey: 'test-key', apiMode: 'responses', codexCli: false })
   let store: typeof import('./store')
 
   beforeEach(async () => {
@@ -611,7 +611,8 @@ describe('mask draft lifecycle in store actions', () => {
         ...DEFAULT_SETTINGS,
         baseUrl: 'https://api.example.com/v1',
         apiKey: 'test-key',
-        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({ ...profile, transparentBackgroundMethod: 'local' })),
+        codexCli: false,
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({ ...profile, codexCli: false, transparentBackgroundMethod: 'local' })),
       },
       prompt: 'prompt',
       inputImages: [],
@@ -858,7 +859,13 @@ describe('mask draft lifecycle in store actions', () => {
       revisedPrompts: [],
     })
     useStore.setState({
-      settings: { ...DEFAULT_SETTINGS, baseUrl: 'https://api.example.com/v1', apiKey: 'test-key' },
+      settings: {
+        ...DEFAULT_SETTINGS,
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'test-key',
+        codexCli: false,
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({ ...profile, codexCli: false })),
+      },
       prompt: '透明玻璃瓶',
       params: {
         ...DEFAULT_PARAMS,
@@ -4549,6 +4556,7 @@ describe('agent built-in image tool failure', () => {
       id: 'standard-image-profile',
       apiKey: 'image-key',
       apiMode: 'images',
+      codexCli: false,
     })
     useStore.setState({
       settings: normalizeSettings({

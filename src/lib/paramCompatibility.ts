@@ -13,7 +13,7 @@ export function getOutputImageLimitForSettings(settings: AppSettings) {
   return getActiveApiProfile(settings).provider === 'fal' ? MAX_FAL_OUTPUT_IMAGES : MAX_OPENAI_OUTPUT_IMAGES
 }
 
-/** 根据图片模型及通道规范参数，清理复杂度等专属字段，避免隐藏选项继续影响请求。 */
+/** 根据图片模型及通道规范参数，统一清理 OpenAI 和自定义 Codex 通道的隐藏字段。 */
 export function normalizeParamsForSettings(
   params: TaskParams,
   settings: AppSettings,
@@ -58,7 +58,7 @@ export function normalizeParamsForSettings(
   if (!capabilities.qualities.includes(nextParams.quality)) {
     nextParams.quality = capabilities.qualities.includes('high') ? 'high' : 'auto'
   }
-  if (activeProfile.provider === 'openai' && !capabilities.nativeOutput) {
+  if (!capabilities.nativeOutput) {
     nextParams.output_format = 'png'
     nextParams.output_compression = null
     nextParams.moderation = 'auto'
