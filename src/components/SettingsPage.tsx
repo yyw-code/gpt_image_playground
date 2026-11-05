@@ -63,6 +63,7 @@ import { TooltipButton } from './TooltipButton'
 import GeneralSettingsTab from './settings/GeneralSettingsTab'
 import AgentSettingsTab from './settings/AgentSettingsTab'
 import ApiModelFields from './settings/ApiModelFields'
+import SiteKeyPicker from './settings/SiteKeyPicker'
 import ProfileEditDialog from './settings/ProfileEditDialog'
 import FontLicensesModal from './settings/FontLicensesModal'
 import CustomProviderModal from './settings/CustomProviderModal'
@@ -164,7 +165,7 @@ function isProfileApiProxyEligible(settings: AppSettings, profile: ApiProfile) {
   return !isAsyncCustomProvider(customProvider)
 }
 
-/** 在独立页面中管理两套配置列表及通用设置；返回时保存草稿，不改变工作台上下文。 */
+/** 管理画廊、Agent 及通用设置，支持按名称选择本站密钥；返回时保存草稿。 */
 export default function SettingsPage() {
   const showSettings = useStore((s) => s.showSettings)
   const settingsTabRequest = useStore((s) => s.settingsTabRequest)
@@ -1441,8 +1442,9 @@ export default function SettingsPage() {
                   </button>
                 </div>
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                  {IS_SITE_MODE ? '请使用你本人在本站创建的密钥；当前需要手动填写。' : <>支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code></>}
+                  {IS_SITE_MODE ? '可从主站获取本人密钥并按名称选择，也可手动填写。' : <>支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code></>}
                 </div>
+                <SiteKeyPicker key={activeProfile.id} profile={activeProfile} onSelect={(apiKey) => commitActiveProfilePatch({ apiKey })} />
               </div>
 
               {/* 图片配置仅提供 Images；锁定的旧预置保留原协议并提示管理员处理。 */}

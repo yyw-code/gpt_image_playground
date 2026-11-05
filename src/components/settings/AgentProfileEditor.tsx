@@ -7,6 +7,7 @@ import { getSiteConnection, isSiteApiProfile } from '../../lib/siteProfiles'
 import { IS_SITE_MODE } from '../../lib/siteMode'
 import { isApiProxyAvailable, isApiProxyLocked } from '../../lib/devProxy'
 import ApiModelFields from './ApiModelFields'
+import SiteKeyPicker from './SiteKeyPicker'
 import ProfileEditDialog from './ProfileEditDialog'
 import Select from '../Select'
 
@@ -20,7 +21,7 @@ interface AgentProfileEditorProps {
 
 const FIELD_CLASS = 'w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-300 disabled:opacity-60 dark:bg-white/[0.06] dark:text-gray-200'
 
-/** 列表管理 Agent 配置，表单仅在新增或编辑弹窗中展示，显式启用才切换当前使用项。 */
+/** 列表管理 Agent 配置，弹窗支持按名称选择本站个人密钥，显式启用才切换当前使用项。 */
 export default function AgentProfileEditor({ draft, role, onChange, onCommit, onDelete }: AgentProfileEditorProps) {
   const [showKey, setShowKey] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -162,6 +163,7 @@ export default function AgentProfileEditor({ draft, role, onChange, onCommit, on
           <button type="button" onClick={() => setShowKey(!showKey)} className="shrink-0 text-xs">{showKey ? '隐藏' : '显示'}</button>
         </div>
       </label>
+      <SiteKeyPicker key={profile.id} profile={profile} onSelect={(apiKey) => patchProfile({ apiKey }, true)} />
       {role === 'image' && profile.provider === 'openai' && <label className="block space-y-1 text-xs text-gray-500">生图方式<Select value={profile.apiMode} disabled={locked} options={[{ label: '直接生图（Images）', value: 'images' }, { label: '文本模型调用生图工具（Responses）', value: 'responses' }]} onChange={(value) => patchProfile({ apiMode: value as ApiProfile['apiMode'] }, true)} className={FIELD_CLASS} /></label>}
       <ApiModelFields
         profile={profile}
