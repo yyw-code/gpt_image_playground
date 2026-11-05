@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiProfile, AppSettings, BatchProgress, BatchPromptMode, TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
-import { getGrokAspectRatios } from '../../lib/grokImage'
 import { getImageParameterCapabilities } from '../../lib/imageModels'
 import { isTauri } from '../../lib/platform'
 import { IS_SITE_MODE } from '../../lib/siteMode'
@@ -105,6 +104,7 @@ export default function InputParamsPanel({
   onModelChange,
   modelLabel = '模型',
   textModelControl,
+  profileControl,
   isFalProvider,
   isFalTextToImage,
   displaySize,
@@ -157,6 +157,7 @@ export default function InputParamsPanel({
   onModelChange: (model: string) => void
   modelLabel?: string
   textModelControl?: import('react').ReactNode
+  profileControl?: import('react').ReactNode
   isFalProvider: boolean
   isFalTextToImage: boolean
   displaySize: string
@@ -223,6 +224,7 @@ export default function InputParamsPanel({
 
   return (
     <div className="flex flex-1 flex-wrap sm:flex-nowrap items-center gap-2 min-w-0 text-xs">
+      {profileControl}
       {textModelControl}
       {/* 极小的收缩权重：先截断“更多”的摘要，放不下时才压缩模型 ID */}
       <div className="min-w-0 max-w-full sm:shrink-[0.01] max-sm:flex-auto">
@@ -239,20 +241,9 @@ export default function InputParamsPanel({
       {activeProfile.apiMode === 'responses' && <span className="shrink-0 text-gray-500" title="由文本模型调用的图像生成工具模型">图片：{activeProfile.imageGenerationModel || '接口默认'}</span>}
       {isGrok ? (
         <>
-          <Select
-            value={params.resolution ?? '1k'}
-            onChange={(value) => { if (value === '1k' || value === '2k') setParams({ resolution: value }) }}
-            options={[{ label: '1K', value: '1k' }, { label: '2K', value: '2k' }, { label: '4K（不支持）', value: '4k', disabled: true, disabledReason: 'Grok 仅支持 1K 和 2K 档位' }]}
-            prefix={prefix('分辨率档位')}
-            className={CHIP_CLASS}
-          />
-          <Select
-            value={params.aspect_ratio ?? '1:1'}
-            onChange={(value) => { if (getGrokAspectRatios(activeProfile.model).includes(String(value))) setParams({ aspect_ratio: String(value) }) }}
-            options={getGrokAspectRatios('grok-imagine-image-2.0').map((value) => ({ label: value === 'auto' ? '自动' : value, value, disabled: !getGrokAspectRatios(activeProfile.model).includes(value), disabledReason: '当前 Grok 模型不支持此比例' }))}
-            prefix={prefix('比例')}
-            className={CHIP_CLASS}
-          />
+          <button type="button" onClick={() => { dismissAllTooltips(); onOpenSizePicker() }} className={`flex items-center whitespace-nowrap max-sm:flex-auto sm:shrink-0 ${CHIP_CLASS}`}>
+            {prefix('尺寸')}<span className="font-mono">{(params.resolution ?? '1k').toUpperCase()} · {params.aspect_ratio ?? '1:1'}</span>
+          </button>
           <Select value={params.quality} onChange={(value) => { if (capabilities.qualities.includes(value as TaskParams['quality'])) setParams({ quality: value as TaskParams['quality'] }) }} options={visibleQualityOptions} prefix={prefix('质量')} className={CHIP_CLASS} />
         </>
       ) : (

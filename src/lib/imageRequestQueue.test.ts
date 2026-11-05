@@ -35,3 +35,23 @@ describe('页面图片请求队列', () => {
     expect(events).toHaveBeenCalledWith('running', 0)
   })
 })
+
+it('Grok 全页面共享两个槽位，一张完成立即补位且不影响 GPT', async () => {
+  let releaseFirst!: () => void
+  let releaseSecond!: () => void
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve })
+  const secondWorker = vi.fn(() => secondGate)
+  const first = enqueueImageRequest(() => firstGate, { lane: 'grok' })
+  const second = enqueueImageRequest(secondWorker, { lane: 'grok' })
+  const next = vi.fn(async () => 'third')
+  const third = enqueueImageRequest(next, { lane: 'grok' })
+  try {
+    expect(secondWorker).toHaveBeenCalledOnce()
+    expect(next).not.toHaveBeenCalled()
+    expect(await enqueueImageRequest(async () => 'GPT')).toBe('GPT')
+    releaseSecond()
+    await second
+    expect(await third).toBe('third')
+  } finally { releaseFirst(); releaseSecond(); await Promise.all([first, second, third]) }
+})

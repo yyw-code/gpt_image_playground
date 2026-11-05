@@ -30,6 +30,13 @@ function task(overrides: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 describe('task lifecycle patches', () => {
+  it('刷新时确认已提交图片引用的 saving 槽，未收到图片的请求仍为未知', () => {
+    const source = task({ status: 'running', params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['saved'], outputErrors: [{ requestIndex: 1, error: 'pending' }, { requestIndex: 2, error: 'pending' }], imageRequests: [{ state: 'saving', queuedAt: 1 }, { state: 'running', queuedAt: 1 }, { state: 'queued', queuedAt: 1 }] })
+    const restored = markInterruptedOpenAIRunningTasks([source], 10).tasks[0]
+    expect(restored.imageRequests?.map((item) => item.state)).toEqual(['saved', 'unknown', 'queued'])
+    expect(restored.imageRequests?.[0].savedAt).toBeUndefined()
+  })
+
   it('derives done and error terminal fields from the caller time', () => {
     const source = task({ createdAt: 1_000 })
 

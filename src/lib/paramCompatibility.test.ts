@@ -174,3 +174,12 @@ describe('parameter compatibility', () => {
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, quality: 'max' }, settings).quality).toBe('high')
   })
 })
+
+it('提交校验阻止多提示词超过十张及不支持的 Grok 比例', async () => {
+  const { getImageSubmissionError } = await import('./paramCompatibility')
+  const profile = createDefaultOpenAIProfile({ provider: 'grok', model: 'grok-imagine-image' })
+  const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
+  expect(getImageSubmissionError({ ...DEFAULT_PARAMS, n: 6 }, settings, 2)).toContain('10')
+  expect(getImageSubmissionError({ ...DEFAULT_PARAMS, aspect_ratio: '21:9' }, settings)).toContain('比例')
+  expect(getImageSubmissionError({ ...DEFAULT_PARAMS, aspect_ratio: '16:9', n: 10 }, settings)).toBeNull()
+})

@@ -20,8 +20,7 @@ import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashI
 import ViewportTooltip from './ViewportTooltip'
 import { CommentBadge } from './CommentMarks'
 
-/** 展示任务快照与原图尺寸、质量和可选复杂度；Grok 使用独立分辨率、比例及 2.0 质量。 */
-/** 展示任务图片及逐图失败位置，支持保持详情打开的原记录补图和队列状态。 */
+/** 展示原图、逐图失败与耗时；补图保留原配置，接口等待含传输时间，不冒充纯模型耗时。 */
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
@@ -158,6 +157,7 @@ export default function DetailModal() {
   const allInputImageIds = task?.inputImageIds ?? []
   const outputSlots = useMemo(() => task ? getTaskOutputSlots(task) : [], [task])
   const currentOutputSlot = outputSlots[imageIndex]
+  const currentRequest = task?.imageRequests?.[currentOutputSlot?.requestIndex ?? imageIndex]
   const currentOutputImageId = currentOutputSlot?.imageId || ''
   const currentOutputImageIndex = currentOutputSlot?.outputImageIndex ?? -1
   const currentOutputError = currentOutputSlot?.error || ''
@@ -1052,6 +1052,11 @@ export default function DetailModal() {
             </div>
 
             {/* 时间 */}
+            {currentRequest && <div className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500" aria-label="本张图片耗时">
+              {currentRequest.startedAt !== undefined && <span>排队 {Math.max(0, (currentRequest.startedAt - currentRequest.queuedAt) / 1000).toFixed(1)} 秒</span>}
+              {currentRequest.receivedAt !== undefined && currentRequest.startedAt !== undefined && <span>接口等待与传输 {Math.max(0, (currentRequest.receivedAt - currentRequest.startedAt) / 1000).toFixed(1)} 秒</span>}
+              {currentRequest.savedAt !== undefined && currentRequest.receivedAt !== undefined && <span>本地处理与保存 {Math.max(0, (currentRequest.savedAt - currentRequest.receivedAt) / 1000).toFixed(1)} 秒</span>}
+            </div>}
             <div className="text-xs text-gray-400 dark:text-gray-500 mb-4">
               <span>创建于 {formatTime(task.createdAt)}</span>
               {task.startedAt != null && task.startedAt > task.createdAt && (

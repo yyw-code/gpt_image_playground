@@ -58,6 +58,24 @@ describe('site Images target count', () => {
     expect(result.failedRequests).toEqual([{ requestIndex: 1, error: 'Generation failed' }])
   })
 
+  it('逐张回调在整批完成之前执行，并等待该图片保存完成', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let requests = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      requests++
+      if (requests === 2) await gate
+      return new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgo=' }] }))
+    })
+    const onImageResult = vi.fn(async (_event: { requestIndex: number; result: { images: string[] } }) => {})
+    const pending = callImageApi({ settings, prompt: 'cup', params: { ...DEFAULT_PARAMS, n: 2 }, inputImageDataUrls: [], onImageResult })
+    try {
+      await vi.waitFor(() => expect(onImageResult).toHaveBeenCalledTimes(1))
+      expect(onImageResult.mock.calls[0][0]).toMatchObject({ requestIndex: 0, result: { images: ['data:image/png;base64,iVBORw0KGgo='] } })
+    } finally { release(); await pending }
+    expect(onImageResult).toHaveBeenCalledTimes(2)
+  })
+
   it('reports failure when all single-image requests fail', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response(JSON.stringify({ error: { message: 'Generation failed' } }), { status: 400 }))

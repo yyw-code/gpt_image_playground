@@ -73,3 +73,23 @@ describe('model-aware size picker', () => {
     }
   })
 })
+
+describe('Grok 原生尺寸选择', () => {
+  it('保留 2K 和原生比例，禁用 4K/自定义像素及旧模型不支持的比例', () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    const onGrokSelect = vi.fn()
+    try {
+      act(() => root.render(<SizePickerModal currentSize="auto" sizeMode="grok" grokModel="grok-imagine-image" grokResolution="2k" grokAspectRatio="16:9" onGrokSelect={onGrokSelect} onSelect={vi.fn()} onClose={vi.fn()} />))
+      const button = (label: string) => [...container.querySelectorAll('button')].find((el) => el.textContent?.trim() === label)!
+      expect(button('4K').disabled).toBe(true)
+      expect(button('2K').disabled).toBe(false)
+      expect(button('自定义宽高').disabled).toBe(true)
+      expect(button('21:9').disabled).toBe(true)
+      act(() => button('9:16').click())
+      act(() => button('确定').click())
+      expect(onGrokSelect).toHaveBeenCalledWith({ resolution: '2k', aspect_ratio: '9:16' })
+    } finally { act(() => root.unmount()); vi.unstubAllGlobals() }
+  })
+})

@@ -436,7 +436,7 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
       ? customProvider.editSubmit
       : customProvider.submit
     const isAsync = Boolean(submitMapping.taskIdPath)
-    if ((profile.codexCli || profile.provider === 'grok') && n > 1 && !isAsync) return callCustomHttpImageApiConcurrent(opts, profile, customProvider, n)
+    if (!isAsync && (profile.provider === 'grok' || profile.codexCli && n > 1)) return callCustomHttpImageApiConcurrent(opts, profile, customProvider, n)
     return callCustomHttpImageApi(opts, profile, customProvider)
   }
 
@@ -472,7 +472,10 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
       onPartialImage: opts.onPartialImage
         ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
         : undefined,
-    }, profile)),
+    }, profile).then(async (result) => {
+      await opts.onImageResult?.({ requestIndex, result })
+      return result
+    })),
   )
 
   return mergeConcurrentApiResults(results)
@@ -986,23 +989,24 @@ function mergeConcurrentApiResults(results: PromiseSettledResult<CallApiResult>[
   }
 }
 
-/** 合并独立请求结果；Grok 每批最多并发两张，任务失效时停止后续批次，其他失败保留成功图片。 */
+/** 合并独立请求结果；Grok 同页面最多并发两张，单张结束即保存并补位，取消等待项不再请求。 */
 async function callCustomHttpImageApiConcurrent(
   opts: CallApiOptions,
   profile: ApiProfile,
   customProvider: CustomProviderDefinition,
   n: number,
 ): Promise<CallApiResult> {
-  const results: PromiseSettledResult<CallApiResult>[] = []
-  const concurrency = profile.provider === 'grok' ? 2 : n
-  for (let offset = 0; offset < n; offset += concurrency) {
-    if (opts.isCancelled?.()) throw new DOMException('任务已取消', 'AbortError')
-    const batch = await Promise.allSettled(Array.from({ length: Math.min(concurrency, n - offset) }).map(() => callCustomHttpImageApi({
-      ...opts,
-      params: { ...opts.params, n: 1 },
-    }, profile, customProvider)))
-    results.push(...batch)
-  }
+  const results = await Promise.allSettled(Array.from({ length: n }, (_, requestIndex) => {
+    const worker = async () => {
+      const result = await callCustomHttpImageApi({ ...opts, params: { ...opts.params, n: 1 } }, profile, customProvider)
+      await opts.onImageResult?.({ requestIndex, result })
+      return result
+    }
+    return profile.provider === 'grok' ? enqueueImageRequest(worker, {
+      lane: 'grok', signal: opts.signal, isCancelled: opts.isCancelled,
+      onState: (state, position) => opts.onRequestState?.({ requestIndex, state, position }),
+    }) : worker()
+  }))
   return mergeConcurrentApiResults(results)
 }
 
@@ -1020,7 +1024,10 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
     onPartialImage: opts.onPartialImage
       ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
       : undefined,
-  }, profile))
+  }, profile).then(async (result) => {
+    await opts.onImageResult?.({ requestIndex, result })
+    return result
+  }))
   const results = await Promise.allSettled(promises)
   return mergeConcurrentApiResults(results)
 }

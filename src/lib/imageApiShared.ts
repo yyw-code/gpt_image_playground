@@ -27,6 +27,8 @@ export interface CallApiOptions {
   signal?: AbortSignal
   /** 单图请求进入队列或实际执行时通知页面，序号相对于本次请求。 */
   onRequestState?: (event: { requestIndex: number; state: 'queued' | 'running' | 'finished'; position: number }) => void
+  /** 最终单图结果到达即通知；回调完成表示已保存，不包含流式预览。 */
+  onImageResult?: (event: { requestIndex: number; result: CallApiResult }) => Promise<void>
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void

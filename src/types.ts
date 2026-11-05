@@ -303,6 +303,8 @@ export interface TaskRecord {
   outputImages: string[]
   /** 并发多图中失败的输出槽位，requestIndex 为从 0 开始的请求序号 */
   outputErrors?: Array<{ requestIndex: number; error: string }>
+  /** 每个输出的执行状态与阶段耗时；不保存密钥，未知结果不会自动重发。 */
+  imageRequests?: Array<{ state: 'queued' | 'running' | 'saving' | 'saved' | 'failed' | 'unknown'; queuedAt: number; startedAt?: number; receivedAt?: number; savedAt?: number }>
   /** 本次单图请求的排队或执行状态；刷新后不自动恢复提交。 */
   generationProgress?: { state: 'queued' | 'running'; requestIndex: number; queuePosition: number }
   /** 流式生成的中间步骤图片 id 列表，仅失败时保留供排查/下载 */

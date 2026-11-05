@@ -9,7 +9,7 @@ import { getImageParameterCapabilities } from '../lib/imageModels'
 import { MAX_GROK_INPUT_IMAGES } from '../lib/grokImage'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { splitBatchPrompts } from '../lib/batchPrompts'
-import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
+import { DEFAULT_FAL_IMAGE_SIZE, getImageSubmissionError, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageComments, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
 import { formatImageRatio, normalizeCodexCliImageSize, normalizeImageSize, parseRatio } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
@@ -29,6 +29,7 @@ import { CommentBadge } from './CommentMarks'
 import ButtonTooltip from './input/buttonTooltip'
 import DragUploadOverlay from './input/dragUploadOverlay'
 import InputBatchBars from './input/inputBatchBars'
+import ImageProfileSelect from './input/imageProfileSelect'
 import InputParamsPanel from './input/inputParamsPanel'
 
 function getFavoriteCollectionTasksForBatch(collectionId: string, tasks: TaskRecord[], defaultFavoriteCollectionId: string | null) {
@@ -106,6 +107,7 @@ export default function InputBar() {
   const reusedTaskApiProfileId = useStore((s) => s.reusedTaskApiProfileId)
   const reusedTaskApiProfileScope = useStore((s) => s.reusedTaskApiProfileScope)
   const reusedTaskApiModel = useStore((s) => s.reusedTaskApiModel)
+  const setReusedTaskApiProfile = useStore((s) => s.setReusedTaskApiProfile)
   const setReusedTaskApiModel = useStore((s) => s.setReusedTaskApiModel)
   const setShowSettings = useStore((s) => s.setShowSettings)
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
@@ -445,7 +447,7 @@ export default function InputBar() {
     const reusedProfile = appMode !== 'agent' && settings.reuseTaskApiProfileTemporarily && reusedTaskApiProfileId
       ? (reusedTaskApiProfileScope === 'agent' ? settings.agentProfiles : settings.profiles).find((profile) => profile.id === reusedTaskApiProfileId)
       : undefined
-    return reusedProfile ? resolveApiProfileModel(reusedProfile, reusedTaskApiModel ?? undefined) : currentActiveProfile
+    return reusedProfile ? { ...resolveApiProfileModel(reusedProfile), ...(reusedTaskApiModel ? { model: reusedTaskApiModel } : {}) } : currentActiveProfile
   }, [appMode, currentActiveProfile, reusedTaskApiModel, reusedTaskApiProfileId, reusedTaskApiProfileScope, settings])
   const isTemporarilyReusedProfile = appMode !== 'agent' && Boolean(reusedTaskApiProfileId) && (reusedTaskApiProfileScope === 'agent' || activeProfile.id !== currentActiveProfile.id)
   const profilePool = appMode === 'agent' || isTemporarilyReusedProfile && reusedTaskApiProfileScope === 'agent' ? settings.agentProfiles : settings.profiles
@@ -684,8 +686,10 @@ export default function InputBar() {
   }, [agentAutoImageCount, params.n])
 
   useEffect(() => {
+    if (getImageSubmissionError(params, effectiveSettings)) return
     const normalizedParams = normalizeParamsForSettings(params, effectiveSettings, { hasInputImages: inputImages.length > 0 })
     const patch = getChangedParams(params, normalizedParams)
+    if (activeProfile.provider === 'grok') delete patch.size
     if (Object.keys(patch).length) {
       setParams(patch)
     }
@@ -1679,6 +1683,10 @@ export default function InputBar() {
       params={params}
       setParams={setParams}
       activeProfile={activeProfile}
+      profileControl={appMode === 'gallery' ? <ImageProfileSelect settings={settings} activeProfile={activeProfile} temporary={isTemporarilyReusedProfile} onChange={(id) => {
+        setReusedTaskApiProfile(null)
+        setSettings({ activeProfileId: id })
+      }} /> : undefined}
       modelOptions={modelOptions}
       onModelChange={handleModelChange}
       modelLabel={activeProfile.apiMode === 'responses' ? '对话' : '图片'}
@@ -1758,6 +1766,10 @@ export default function InputBar() {
           allowAuto={!isFalTextToImage}
           codexCli={activeProfile.codexCli}
           sizeMode={imageCapabilities.sizeMode}
+          grokModel={activeProfile.model}
+          grokResolution={params.resolution}
+          grokAspectRatio={params.aspect_ratio}
+          onGrokSelect={setParams}
         />
       )}
 

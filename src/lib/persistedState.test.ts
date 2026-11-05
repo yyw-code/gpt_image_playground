@@ -58,6 +58,11 @@ function fallback() {
 }
 
 describe('persisted state codec', () => {
+  it('草稿刷新后保留临时复用的配置身份，关闭输入恢复则清除', () => {
+    const saved = createPersistedState({ ...source({ ...DEFAULT_SETTINGS, persistInputOnRestart: true }), reusedTaskApiProfileId: 'original', reusedTaskApiProfileScope: 'agent', reusedTaskApiModel: 'original-model', reusedTaskApiProfileName: '原配置' })
+    expect(normalizePersistedState(saved, fallback())!.state).toMatchObject({ reusedTaskApiProfileId: 'original', reusedTaskApiProfileScope: 'agent', reusedTaskApiModel: 'original-model' })
+    expect(normalizePersistedState({ ...saved, settings: { ...saved.settings, persistInputOnRestart: false } }, fallback())!.state.reusedTaskApiProfileId).toBeNull()
+  })
   it('restores valid optional complexity independently and discards invalid external values', () => {
     const saved = createPersistedState({ ...source(), params: { ...DEFAULT_PARAMS, complexity: 'low' }, galleryParams: DEFAULT_PARAMS, agentParams: { ...DEFAULT_PARAMS, complexity: 'medium' } })
     const restored = normalizePersistedState(JSON.parse(JSON.stringify(saved)), fallback())!.state

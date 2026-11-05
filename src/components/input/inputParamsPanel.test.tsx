@@ -71,17 +71,16 @@ describe('参数能力展示', () => {
     expect(container.textContent).toContain('接口原始格式')
   })
 
-  it('Grok 旧模型与 2.0 展示相同选项，按模型禁用质量、比例和 4K', () => {
+  it('Grok 使用统一尺寸弹窗入口，质量仍按模型禁用', () => {
     const value = props('grok')
     const legacy = markup(value)
     expect(control(legacy, '质量').querySelector<HTMLOptionElement>('option[value="medium"]')?.disabled).toBe(true)
-    expect(control(legacy, '比例').querySelector<HTMLOptionElement>('option[value="21:9"]')?.disabled).toBe(true)
+    expect([...legacy.querySelectorAll('button')].some((button) => button.textContent?.includes('1K · 1:1'))).toBe(true)
     value.activeProfile.model = 'grok-imagine-image-2.0'
     const modern = markup(value)
     expect(control(modern, '质量').querySelector<HTMLOptionElement>('option[value="medium"]')?.disabled).toBe(false)
     expect(control(modern, '质量').querySelector<HTMLOptionElement>('option[value="high"]')?.disabled).toBe(true)
-    expect(control(modern, '比例').querySelector<HTMLOptionElement>('option[value="21:9"]')?.disabled).toBe(false)
-    expect(control(modern, '分辨率档位').querySelector<HTMLOptionElement>('option[value="4k"]')?.disabled).toBe(true)
+    expect([...modern.querySelectorAll('button')].some((button) => button.textContent?.includes('尺寸'))).toBe(true)
   })
 
   it('未知模型使用自动参数，保留所有选项且 Agent 张数仍自动', () => {

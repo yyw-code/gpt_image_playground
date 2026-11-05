@@ -124,7 +124,14 @@ export async function storeImage(dataUrl: string, source: NonNullable<StoredImag
   return (await storeImageWithSize(dataUrl, source)).id
 }
 
-export async function storeImageWithSize(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload'): Promise<StoreImageResult> {
+/** 存储图片并返回实际宽高；最终结果启用严格解码，坏图在任何写入前报错。 */
+export async function storeImageWithSize(dataUrl: string, source: NonNullable<StoredImage['source']> = 'upload', requireDecoded = false): Promise<StoreImageResult> {
+  if (requireDecoded) {
+    try {
+      const image = await loadImage(dataUrl)
+      if (!image.naturalWidth || !image.naturalHeight) throw new Error('尺寸无效')
+    } catch { throw new Error('最终图片无法解码，未标记为保存成功') }
+  }
   const id = await hashDataUrl(dataUrl)
   const existing = await getImage(id)
   if (!existing) {

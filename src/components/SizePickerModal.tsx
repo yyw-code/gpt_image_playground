@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { calculateImageSize, FIXED_IMAGE_SIZES, formatImageRatio, isExperimentalImageSize, normalizeCodexCliImageSize, normalizeImageSize, parseRatio, type ImageSizeMode, type SizeTier } from '../lib/size'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
+import { getGrokAspectRatios } from '../lib/grokImage'
 import ViewportTooltip from './ViewportTooltip'
 
 const TIERS: SizeTier[] = ['1K', '2K', '4K']
@@ -23,6 +24,10 @@ interface Props {
   onClose: () => void
   allowAuto?: boolean
   codexCli?: boolean
+  grokModel?: string
+  grokResolution?: '1k' | '2k'
+  grokAspectRatio?: string
+  onGrokSelect?: (params: { resolution: '1k' | '2k'; aspect_ratio: string }) => void
   sizeMode?: ImageSizeMode
 }
 
@@ -47,7 +52,7 @@ function findPresetForSize(size: string) {
 }
 
 /** 展示全部尺寸入口；受限通道保留比例选择，不支持的像素控制置灰且不写入参数。 */
-export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, codexCli = false, sizeMode = 'custom' }: Props) {
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, codexCli = false, sizeMode = 'custom', grokModel = '', grokResolution = '1k', grokAspectRatio = '1:1', onGrokSelect }: Props) {
   usePreventBackgroundScroll(true)
 
   const modalRef = useRef<HTMLDivElement>(null)
@@ -74,14 +79,18 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   }
 
   const currentPreset = findPresetForSize(currentSize)
-  const compositionOnly = codexCli || sizeMode === 'composition'
+  const isGrok = sizeMode === 'grok'
+  const grokRatios = getGrokAspectRatios(grokModel)
+  const visibleRatios = isGrok ? getGrokAspectRatios('grok-imagine-image-2.0').filter((value) => value !== 'auto').map((value) => ({ label: value, value })) : RATIOS
+  const compositionOnly = !isGrok && codexCli || sizeMode === 'composition'
   const fixedSizesOnly = sizeMode === 'fixed'
   const autoOnly = sizeMode === 'auto'
-  const customSizeDisabled = compositionOnly || fixedSizesOnly || autoOnly
-  const sizeDisabledReason = compositionOnly ? '当前通道仅支持构图比例引导，像素由接口决定' : fixedSizesOnly ? '当前模型仅支持下方固定尺寸' : '当前模型尺寸能力尚未确认，使用接口自动尺寸'
+  const customSizeDisabled = isGrok || compositionOnly || fixedSizesOnly || autoOnly
+  const sizeDisabledReason = isGrok ? 'Grok 支持原生比例与 1K/2K 档位，不支持自定义像素和 4K' : compositionOnly ? '当前通道仅支持构图比例引导，像素由接口决定' : fixedSizesOnly ? '当前模型仅支持下方固定尺寸' : '当前模型尺寸能力尚未确认，使用接口自动尺寸'
   const [fixedSize, setFixedSize] = useState(FIXED_IMAGE_SIZES.includes(currentSize) ? currentSize : 'auto')
   const currentParsedSize = parseSize(currentSize)
   const [mode, setMode] = useState<Mode>(() => {
+    if (isGrok) return grokAspectRatio === 'auto' ? 'auto' : 'ratio'
     if (autoOnly) return 'auto'
     if (!currentSize || currentSize === 'auto') return allowAuto ? 'auto' : 'ratio'
     if (currentPreset) return 'ratio'
@@ -90,9 +99,9 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   })
 
   // Ratio mode state
-  const [tier, setTier] = useState<SizeTier>(currentPreset?.tier ?? '1K')
+  const [tier, setTier] = useState<SizeTier>(isGrok ? grokResolution === '2k' ? '2K' : '1K' : currentPreset?.tier ?? '1K')
   // 受限通道没有像素输入页，恢复非预设尺寸时用其原比例初始化，避免确认后变成方形。
-  const [ratio, setRatio] = useState(currentPreset?.ratio ?? (compositionOnly && currentParsedSize ? 'custom' : allowAuto ? '1:1' : '4:3'))
+  const [ratio, setRatio] = useState(isGrok ? grokAspectRatio : currentPreset?.ratio ?? (compositionOnly && currentParsedSize ? 'custom' : allowAuto ? '1:1' : '4:3'))
   const [customRatio, setCustomRatio] = useState(currentParsedSize ? `${currentParsedSize.width}:${currentParsedSize.height}` : '16:9')
 
   // Resolution mode state
@@ -119,6 +128,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   )
 
   const previewSize = useMemo(() => {
+    if (isGrok) return mode === 'auto' ? 'auto' : grokRatios.includes(activeRatio) ? activeRatio : ''
     if (autoOnly) return 'auto'
     if (fixedSizesOnly) return fixedSize
     if (mode === 'auto') return 'auto'
@@ -138,7 +148,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     }
     
     return ''
-  }, [mode, tier, activeRatio, customW, customH, normalizeSize, fixedSizesOnly, fixedSize, autoOnly])
+  }, [mode, tier, activeRatio, customW, customH, normalizeSize, fixedSizesOnly, fixedSize, autoOnly, isGrok, grokModel])
 
   /** 受限通道隐藏内部用于保存比例的像素值，只展示构图选择。 */
   const displaySize = (size: string) => {
@@ -180,7 +190,8 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
   /** 仅确认当前通道允许的尺寸；禁用入口不会修改内部模式。 */
   const applySize = () => {
     if (!previewSize) return
-    onSelect(previewSize)
+    if (isGrok) onGrokSelect?.({ resolution: tier === '2K' ? '2k' : '1k', aspect_ratio: previewSize })
+    else onSelect(previewSize)
     onClose()
   }
 
@@ -206,7 +217,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100">{compositionOnly ? '设置构图比例' : '设置图像尺寸'}</h3>
-            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">当前：{displaySize(currentSize) || 'auto'}</p>
+            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">当前：{isGrok ? `${grokResolution.toUpperCase()} · ${grokAspectRatio}` : displaySize(currentSize) || 'auto'}</p>
           </div>
           <button
             onClick={onClose}
@@ -254,7 +265,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
               <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
               <div className="grid grid-cols-3 gap-2">
                 {TIERS.map((item) => (
-                  <button key={item} className={`${buttonClass(tier === item)} w-full disabled:opacity-40 disabled:cursor-not-allowed`} disabled={customSizeDisabled} title={customSizeDisabled ? sizeDisabledReason : undefined} onClick={() => { if (!customSizeDisabled) setTier(item) }}>{item}</button>
+                  <button key={item} className={`${buttonClass(tier === item)} w-full disabled:opacity-40 disabled:cursor-not-allowed`} disabled={isGrok ? item === '4K' : customSizeDisabled} title={customSizeDisabled ? sizeDisabledReason : undefined} onClick={() => { if (isGrok ? item !== '4K' : !customSizeDisabled) setTier(item) }}>{item}</button>
                 ))}
               </div>
             </section>
@@ -270,7 +281,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                   </div>
                   <h4 className="text-sm font-medium text-gray-800 dark:text-gray-200">自动尺寸</h4>
                   <p className="mt-2 text-xs text-gray-400 leading-relaxed dark:text-gray-500">
-                    不向模型传递具体的分辨率参数
+                    {isGrok ? '发送所选分辨率档位，比例由模型决定' : '不向模型传递具体的分辨率参数'}
                     <br />
                     由模型自己决定生成尺寸
                   </p>
@@ -283,15 +294,17 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                 <section>
                   <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">图像比例</div>
                   <div className="grid grid-cols-4 gap-2">
-                    {RATIOS.map((item) => {
+                    {visibleRatios.map((item) => {
                       const [w, h] = item.value.split(':').map(Number)
                       const isHorizontal = w > h
                       const isSquare = w === h
                       return (
                         <button
                           key={item.value}
-                          className={`${buttonClass(ratio === item.value)} flex flex-col items-center justify-center gap-1.5 !py-2.5`}
-                          onClick={() => setRatio(item.value)}
+                          disabled={isGrok && !grokRatios.includes(item.value)}
+                          title={isGrok && !grokRatios.includes(item.value) ? '当前 Grok 模型不支持此比例' : undefined}
+                          className={`${buttonClass(ratio === item.value)} disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center justify-center gap-1.5 !py-2.5`}
+                          onClick={() => { if (!isGrok || grokRatios.includes(item.value)) setRatio(item.value) }}
                         >
                           <div className="flex h-5 w-5 items-center justify-center">
                             <div
@@ -306,7 +319,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                         </button>
                       )
                     })}
-                    <button className={`${buttonClass(ratio === 'custom')} col-span-4`} onClick={() => setRatio('custom')}>
+                    <button disabled={isGrok} title={isGrok ? sizeDisabledReason : undefined} className={`${buttonClass(ratio === 'custom')} col-span-4 disabled:opacity-40 disabled:cursor-not-allowed`} onClick={() => { if (!isGrok) setRatio('custom') }}>
                       自定义比例
                     </button>
                   </div>
@@ -378,7 +391,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             <div className="text-xs text-gray-400 dark:text-gray-500">将使用</div>
             <div className="mt-1 flex items-center gap-2">
               <span className="font-mono text-lg font-semibold text-gray-800 dark:text-gray-100">
-                {displaySize(previewSize) || '尺寸无效'}
+                {isGrok && previewSize ? `${tier} · ${previewSize}` : displaySize(previewSize) || '尺寸无效'}
               </span>
               {isClamped && (
                 <div

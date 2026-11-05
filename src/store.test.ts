@@ -22,10 +22,10 @@ vi.mock('./lib/db', () => {
   return {
     CURRENT_THUMBNAIL_VERSION: 2,
     getAllTasks: async () => [...tasks.values()],
-    putTask: async (task: TaskRecord) => {
+    putTask: vi.fn(async (task: TaskRecord) => {
       tasks.set(task.id, task)
       return task.id
-    },
+    }),
     deleteTask: vi.fn(async (id: string) => {
       tasks.delete(id)
     }),
@@ -321,6 +321,11 @@ describe('favorite collection deletion', () => {
 })
 
 describe('task retry', () => {
+  /** 新任务均记录创建时的配置；无归属旧记录在独立用例检查拒绝重试。 */
+  function boundTask(overrides: Partial<TaskRecord>) {
+    const profile = normalizeSettings(useStore.getState().settings).profiles[0]
+    return task({ apiProfileId: profile.id, apiConfigScope: 'gallery', apiModel: profile.model, ...overrides })
+  }
   beforeEach(async () => {
     await clearTasks()
     await clearImages()
@@ -334,7 +339,7 @@ describe('task retry', () => {
   })
 
   it('retries a failed task in place regardless of the legacy default setting', async () => {
-    const failed = task({ status: 'error', error: '上次失败' })
+    const failed = boundTask({ status: 'error', error: '上次失败' })
     useStore.setState({ settings: { ...useStore.getState().settings, retryMode: DEFAULT_SETTINGS.retryMode }, tasks: [failed] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
@@ -350,7 +355,7 @@ describe('task retry', () => {
     ['sourceMode', { sourceMode: 'agent' as const, agentConversationId: 'conversation-1', agentRoundId: 'round-1' }],
     ['legacy conversation id', { agentConversationId: 'conversation-1' }],
   ])('always creates a gallery task when retrying an Agent task (%s)', async (_label, agentFields) => {
-    const failed = task({ status: 'error', error: '上次失败', ...agentFields })
+    const failed = boundTask({ status: 'error', error: '上次失败', ...agentFields })
     useStore.setState({ settings: { ...useStore.getState().settings, retryMode: 'overwriteAll' }, tasks: [failed] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
@@ -365,7 +370,7 @@ describe('task retry', () => {
   })
 
   it('creates a new group for a successful task even with the legacy overwrite setting', async () => {
-    const original = task({ outputImages: ['old-output'], isFavorite: true })
+    const original = boundTask({ outputImages: ['old-output'], isFavorite: true })
     await putImage({ id: 'old-output', dataUrl: 'data:image/png;base64,old', source: 'generated', createdAt: 1 })
     useStore.setState({ settings: { ...useStore.getState().settings, alwaysShowRetryButton: true, retryMode: 'overwriteAll' }, tasks: [original] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
@@ -383,7 +388,7 @@ describe('task retry', () => {
   })
 
   it('retries a failed task in place without losing its metadata', async () => {
-    const failed = task({
+    const failed = boundTask({
       status: 'error',
       error: '上次失败',
       outputErrors: [{ requestIndex: 0, error: '上次失败' }],
@@ -504,11 +509,11 @@ describe('task retry', () => {
   })
 
   it.each([undefined, 2])('partial retry only requests selected failed positions (%s) and preserves the original group', async (index) => {
-    const original = task({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'],
+    const original = boundTask({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'],
       outputErrors: [{ requestIndex: 0, error: 'busy' }, { requestIndex: 2, error: 'busy' }],
       actualParamsByImage: { 'old-output': { quality: 'medium', size: '1024x1024' } },
       rawImageUrls: ['https://image.example/old'], favoriteCollectionIds: ['favorites'], isFavorite: true })
-    const other = task({ id: 'other' })
+    const other = boundTask({ id: 'other' })
     await putImage({ id: 'old-output', dataUrl: 'data:image/png;base64,old', source: 'generated', createdAt: 1 })
     useStore.setState({ tasks: [other, original] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
@@ -536,7 +541,7 @@ describe('task retry', () => {
   })
 
   it('keeps successes after partial retry fails completely, then fills the same record', async () => {
-    const original = task({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 0, error: 'busy' }, { requestIndex: 2, error: 'busy' }] })
+    const original = boundTask({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 0, error: 'busy' }, { requestIndex: 2, error: 'busy' }] })
     useStore.setState({ tasks: [original] })
     vi.mocked(callImageApi).mockRejectedValueOnce(new Error('still busy')).mockResolvedValueOnce({ images: ['data:image/png;base64,first', 'data:image/png;base64,third'], actualParams: {} })
     await retryTask(original)
@@ -554,7 +559,7 @@ describe('task retry', () => {
   })
 
   it('deleting a waiting task aborts its queue signal and ignores subsequent callbacks', async () => {
-    const original = task({ status: 'error' })
+    const original = boundTask({ status: 'error' })
     useStore.setState({ tasks: [original] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
@@ -581,7 +586,7 @@ describe('task retry', () => {
     vi.mocked(callImageApi).mockImplementationOnce((opts) => enqueueImageRequest(worker, {
       signal: opts.signal, isCancelled: opts.isCancelled,
     }).finally(() => settled.resolve()))
-    const original = task({ status: 'error' })
+    const original = boundTask({ status: 'error' })
     useStore.setState({ tasks: [original] })
     let cancelled = false
     try {
@@ -634,7 +639,7 @@ describe('task retry', () => {
   })
 
   it('still creates a separate task when retrying a successful one in failed-only mode', async () => {
-    const original = task()
+    const original = boundTask({})
     useStore.setState({ tasks: [original] })
     const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce(() => request.promise)
@@ -904,7 +909,7 @@ describe('mask draft lifecycle in store actions', () => {
     await clearImages()
   })
 
-  it('keeps API-returned actual size over decoded image size', async () => {
+  it('uses decoded image size instead of unverified API size', async () => {
     const { callImageApi } = await import('./lib/api')
     vi.mocked(callImageApi).mockClear()
     vi.mocked(callImageApi).mockResolvedValueOnce({
@@ -922,8 +927,8 @@ describe('mask draft lifecycle in store actions', () => {
     await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     const [task] = useStore.getState().tasks
-    expect(task.actualParams?.size).toBe('1024x1024')
-    expect(task.actualParamsByImage?.[task.outputImages[0]].size).toBe('1024x1024')
+    expect(task.actualParams?.size).toBe('1254x1254')
+    expect(task.actualParamsByImage?.[task.outputImages[0]].size).toBe('1254x1254')
     await clearTasks()
     await clearImages()
   })
@@ -4773,7 +4778,7 @@ describe('agent built-in image tool failure', () => {
       arguments: JSON.stringify({ images: [{ id: 'one', prompt: 'one' }, { id: 'two', prompt: 'two' }] }),
     }] })
     const db = await import('./lib/db')
-    const putTask = db.putTask
+    const putTask = vi.mocked(db.putTask).getMockImplementation()!
     const pending = deferred<void>()
     const putTaskSpy = vi.spyOn(db, 'putTask').mockImplementation(async (task) => {
       const result = await putTask(task)
@@ -6580,5 +6585,113 @@ describe('工作区配置与参数隔离', () => {
     }
     expect(useStore.getState().tasks.every((item) => item.apiConfigScope === 'agent')).toBe(true)
     expect(useStore.getState().reusedTaskApiProfileId).toBeNull()
+  })
+})
+
+describe('任务配置固定绑定', () => {
+  it('原模型已移除时不回退当前选中的模型', () => {
+    const profile = createDefaultOpenAIProfile({ id: 'bound', model: 'new-model', apiKey: 'test-key' })
+    const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
+    expect(getTaskApiProfile(settings, task({ apiProfileId: 'bound', apiModel: 'old-model' }), true)).toBeNull()
+  })
+
+  it('缺少历史模型时不猜测配置当前模型', () => {
+    const profile = createDefaultOpenAIProfile({ id: 'bound', model: 'new-model', apiKey: 'test-key' })
+    expect(getTaskApiProfile(normalizeSettings({ profiles: [profile] }), task({ apiProfileId: 'bound', apiModel: undefined }), true)).toBeNull()
+  })
+
+  it('收到首张最终图即持久化，后续请求失败仍保留该图', async () => {
+    await clearTasks()
+    const profile = createDefaultOpenAIProfile({ id: 'bound', apiKey: 'test-key', baseUrl: 'https://api.example.com/v1' })
+    const source = task({ id: 'incremental', status: 'error', outputImages: [], params: { ...DEFAULT_PARAMS, n: 3 }, apiProfileId: profile.id, apiModel: profile.model })
+    useStore.setState({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), tasks: [source], showToast: vi.fn() })
+    const gate = deferred<Awaited<ReturnType<typeof callImageApi>>>()
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      await opts.onImageResult?.({ requestIndex: 0, result: { images: ['data:image/png;base64,1024x1024'] } })
+      return gate.promise
+    })
+    const handled = gate.promise.catch(() => {})
+    await retryTask(source)
+    try {
+      await vi.waitFor(async () => expect((await getAllTasks()).find((item) => item.id === source.id)?.outputImages).toHaveLength(1))
+    } finally { gate.reject(new Error('连接断开')); await handled }
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).not.toBe('running'))
+    expect(useStore.getState().tasks[0].outputImages).toHaveLength(1)
+  })
+})
+
+describe('批量可靠性边界', () => {
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    vi.mocked(callImageApi).mockReset()
+    const profile = createDefaultOpenAIProfile({ id: 'reliable', apiKey: 'test-key', baseUrl: 'https://api.example.com/v1' })
+    useStore.setState({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), tasks: [], showToast: vi.fn(), confirmDialog: null, setConfirmDialog: (dialog) => useStore.setState({ confirmDialog: dialog }) })
+  })
+
+  it('无归属旧任务不能使用当前配置重试', async () => {
+    const source = task({ status: 'error', apiProfileId: undefined })
+    useStore.setState({ tasks: [source] })
+    await retryTask(source)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks[0]).toEqual(source)
+  })
+
+  it('重试参数不再兼容时拒绝请求，不静默修改历史参数', async () => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', apiProfileId: profile.id, apiModel: profile.model, params: { ...DEFAULT_PARAMS, n: 11 } })
+    useStore.setState({ tasks: [source] })
+    await retryTask(source)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks[0].params.n).toBe(11)
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('最多生成 10 张'), 'error')
+  })
+
+  it('结果未知的补图必须提示可能重复计费，取消时不请求', async () => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', apiProfileId: profile.id, apiModel: profile.model, imageRequests: [{ state: 'unknown', queuedAt: 1 }] })
+    useStore.setState({ tasks: [source] })
+    await retryTask(source)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().confirmDialog?.message).toContain('计费')
+  })
+
+  it('乱序最终图按槽位保存，重复回调不重复新增图片', async () => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', apiProfileId: profile.id, apiModel: profile.model, params: { ...DEFAULT_PARAMS, n: 3 } })
+    useStore.setState({ tasks: [source] })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      const result = { images: ['data:image/png;base64,1024x512'] }
+      await opts.onImageResult?.({ requestIndex: 2, result })
+      await opts.onImageResult?.({ requestIndex: 2, result })
+      await opts.onImageResult?.({ requestIndex: 0, result: { images: ['data:image/png;base64,512x1024'] } })
+      return { images: ['data:image/png;base64,512x1024', ...result.images], failedRequests: [{ requestIndex: 1, error: '参数拒绝' }] }
+    })
+    await retryTask(source)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    const saved = useStore.getState().tasks[0]
+    expect(saved.outputImages).toHaveLength(2)
+    expect(saved.outputErrors).toEqual([{ requestIndex: 1, error: '参数拒绝' }])
+    expect(saved.actualParamsByImage?.[saved.outputImages[0]].size).toBe('512x1024')
+    expect((await getAllTasks())[0].outputImages).toEqual(saved.outputImages)
+  })
+
+  it('后续任务引用写入失败不抹掉已落盘图片，也不报告新图片保存成功', async () => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', apiProfileId: profile.id, apiModel: profile.model, params: { ...DEFAULT_PARAMS, n: 2 } })
+    useStore.setState({ tasks: [source] })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      await opts.onImageResult?.({ requestIndex: 0, result: { images: ['data:image/png;base64,1024x512'] } })
+      vi.mocked(putDbTask).mockRejectedValueOnce(new Error('QuotaExceededError'))
+      await opts.onImageResult?.({ requestIndex: 1, result: { images: ['data:image/png;base64,512x1024'] } })
+      return { images: [] }
+    })
+    await retryTask(source)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('error'))
+    const saved = useStore.getState().tasks[0]
+    expect(saved.outputImages).toHaveLength(1)
+    expect(saved.imageRequests?.map((item) => item.state)).toEqual(['saved', 'unknown'])
+    expect(saved.error).toContain('本地任务记录保存失败')
+    expect((await getAllTasks())[0].outputImages).toEqual(saved.outputImages)
   })
 })

@@ -1,4 +1,6 @@
 interface QueueOptions {
+  /** 同页 Grok 共享两个槽位；OpenAI/Agent 仍共享一个槽位。 */
+  lane?: 'openai' | 'grok'
   signal?: AbortSignal
   isCancelled?: () => boolean
   onState?: (state: 'queued' | 'running' | 'finished', position: number) => void
@@ -11,22 +13,27 @@ interface QueueEntry {
 }
 
 const waiting: QueueEntry[] = []
-let active = false
+const active = { openai: 0, grok: 0 }
 
-/** 更新等待位置并启动最早的有效请求；当前页面所有图片配置共享一个执行槽位。 */
+/** 更新等待位置并启动最早的有效请求；同页按供应商共享有界执行槽位。 */
 function drainImageQueue() {
   for (const entry of [...waiting]) {
     if (entry.options.signal?.aborted || entry.options.isCancelled?.()) entry.cancel()
   }
   waiting.forEach((entry, index) => entry.options.onState?.('queued', index + 1))
-  if (active) return
-  const next = waiting.shift()
-  if (!next) return
-  active = true
+  const index = waiting.findIndex((entry) => {
+    const lane = entry.options.lane ?? 'openai'
+    return active[lane] < (lane === 'grok' ? 2 : 1)
+  })
+  if (index < 0) return
+  const [next] = waiting.splice(index, 1)
+  const lane = next.options.lane ?? 'openai'
+  active[lane]++
   void next.start().finally(() => {
-    active = false
+    active[lane]--
     drainImageQueue()
   })
+  drainImageQueue()
 }
 
 /** 将单图请求加入 FIFO 队列，实际启动后才运行 worker 内的超时；等待取消不调用接口。 */

@@ -59,7 +59,7 @@ import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
-import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
+import { getImageSubmissionError, getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { getGrokImageInputError } from './lib/grokImage'
 import { runWithConcurrency, splitBatchPrompts } from './lib/batchPrompts'
 import { mergeRetriedTaskOutputs } from './lib/taskOutputRetry'
@@ -1244,14 +1244,16 @@ function getCustomRecoveryProfile(settings: AppSettings, task: TaskRecord) {
   return null
 }
 
-/** 按任务记录的工作区解析原配置及模型，不使用另一工作区的同 ID 配置。 */
-export function getTaskApiProfile(settings: AppSettings, task: TaskRecord): ApiProfile | null {
+/** 按任务工作区解析原配置；提交生成时 requireModel 禁止缺失或已移除模型回退，恢复查询允许旧记录。 */
+export function getTaskApiProfile(settings: AppSettings, task: TaskRecord, requireModel = false): ApiProfile | null {
   const normalized = normalizeSettings(settings)
   if (!task.apiProfileId) return null
   const scope = getTaskApiConfigScope(task)
   const profile = (scope === 'agent' ? normalized.agentProfiles : normalized.profiles).find((item) => item.id === task.apiProfileId)
   // 任务记录的模型仍在配置的模型列表中时，沿用任务提交时的模型
-  return profile ? resolveApiProfileModel(profile, task.apiModel) : null
+  if (!profile || requireModel && (!task.apiModel || !splitModelList(profile.model).includes(task.apiModel))) return null
+  if (IS_SITE_MODE && !isSiteApiProfile(profile) || isPresetConfigOnlyEnabled() && !isPresetProfile(profile.id)) return null
+  return task.apiModel ? { ...profile, model: task.apiModel } : resolveApiProfileModel(profile)
 }
 
 /** 为单次请求创建配置快照；Agent 配置可临时放入请求池，不写回图片设置。 */
@@ -1296,7 +1298,8 @@ function getReusedTaskApiProfile(settings: AppSettings, profileId: string | null
   if (!profileId) return null
   const normalized = normalizeSettings(settings)
   const profile = (scope === 'agent' ? normalized.agentProfiles : normalized.profiles).find((item) => item.id === profileId)
-  return profile ? resolveApiProfileModel(profile, model ?? undefined) : null
+  if (!profile || model && !splitModelList(profile.model).includes(model)) return null
+  return resolveApiProfileModel(profile, model ?? undefined)
 }
 
 function getTaskApiProfileName(task: TaskRecord) {
@@ -1438,12 +1441,13 @@ async function readImageSizeParamsList(images: string[]): Promise<Array<Partial<
   return Promise.all(images.map((image) => readImageSizeParam(image)))
 }
 
+/** 优先使用解码后的实测宽高，避免把接口声明或请求尺寸当作实际输出。 */
 async function resolveImageSizeParamsList(
   images: string[],
   preferred?: Array<Partial<TaskParams> | undefined>,
   sizes?: Array<{ width?: number; height?: number } | undefined>,
 ): Promise<Array<Partial<TaskParams> | undefined>> {
-  const withStoredSizes = images.map((_, index) => addImageSizeParam(preferred?.[index], sizes?.[index]))
+  const withStoredSizes = images.map((_, index) => sizes?.[index]?.width && sizes[index]?.height ? { ...preferred?.[index], size: `${sizes[index]!.width}x${sizes[index]!.height}` } : addImageSizeParam(preferred?.[index], sizes?.[index]))
   if (withStoredSizes.every(hasActualSizeParam)) {
     return withStoredSizes
   }
@@ -1711,9 +1715,9 @@ export async function initStore() {
 }
 
 /** 校验图片能力并快照请求配置归属后提交任务，批量执行不受后续页面选择影响。 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}) {
+export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}, submissionState = useStore.getState()) {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileScope, reusedTaskApiProfileName, reusedTaskApiProfileMissing, reusedTaskApiModel, showToast, setConfirmDialog } =
-    useStore.getState()
+    submissionState
 
   const normalizedSettings = normalizeSettings(settings)
   let activeProfile = getActiveApiProfile(settings)
@@ -1727,12 +1731,12 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       } else {
         setConfirmDialog({
           title: '找不到 API 配置',
-      message: `找不到复用任务所使用的 API 配置「${reusedTaskApiProfileName || '未知配置'}」，要使用当前的 API 配置「${activeProfile.name}」提交任务吗？`,
-      confirmText: '使用当前配置提交',
-      cancelText: '放弃提交',
-      action: () => {
-        void submitTask({ ...options, useCurrentApiProfileWhenReusedMissing: true })
-      },
+          message: `找不到复用任务所使用的 API 配置「${reusedTaskApiProfileName || '未知配置'}」，要使用当前的 API 配置「${activeProfile.name}」提交任务吗？`,
+          confirmText: '使用当前配置提交',
+          cancelText: '放弃提交',
+          action: () => {
+            void submitTask({ ...options, useCurrentApiProfileWhenReusedMissing: true }, submissionState)
+          },
         })
         return
       }
@@ -1761,6 +1765,8 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   const batchPrompts = normalizedSettings.showBatchPrompt && normalizedSettings.batchPromptEnabled ? splitBatchPrompts(prompt) : []
+  const submissionError = getImageSubmissionError(params, requestSettings, batchPrompts.length || 1)
+  if (submissionError) { showToast(submissionError, 'error'); return }
   if (useStore.getState().batchProgress) {
     showToast('批量任务进行中，请等待完成或停止后再提交', 'error')
     return
@@ -1779,11 +1785,11 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       if (coverage === 'full' && !options.allowFullMask) {
         setConfirmDialog({
           title: '确认编辑整张图片？',
-          message: '当前遮罩覆盖了整张图片，提交后可能会重绘全部内容。是否继续？',
+          message: `当前遮罩覆盖了整张图片，将使用「${activeProfile.name}」提交，可能会重绘全部内容。是否继续？`,
           confirmText: '继续提交',
           tone: 'warning',
           action: () => {
-            void submitTask({ allowFullMask: true })
+            void submitTask({ ...options, allowFullMask: true }, submissionState)
           },
         })
         endBatch(batchId)
@@ -1820,7 +1826,9 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     ? getTransparentRequestParams(normalizedParams)
     : { ...normalizedParams, transparent_output: false }
   const normalizedParamPatch = getChangedParams(params, taskParams)
-  if (Object.keys(normalizedParamPatch).length) {
+  // Grok 只使用原生比例，保留草稿中 GPT 的尺寸；异步准备不能改写用户的新草稿。
+  if (activeProfile.provider === 'grok') delete normalizedParamPatch.size
+  if (Object.keys(normalizedParamPatch).length && useStore.getState().params === params && useStore.getState().settings === settings) {
     useStore.getState().setParams(normalizedParamPatch)
   }
 
@@ -2194,7 +2202,8 @@ function addTaskReferencedImageIds(target: Set<string>, task: TaskRecord) {
   for (const id of task.streamPartialImageIds || []) target.add(id)
 }
 
-async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
+/** 通过现有存储入口保存输出；逐张最终结果严格校验解码，失败清理本次孤立图片。 */
+async function storeTaskOutputImages(task: TaskRecord, images: string[], requireDecoded = false) {
   const outputIds: string[] = []
   const outputDataUrls: string[] = []
   const outputImageSizes: Array<{ width?: number; height?: number }> = []
@@ -2205,7 +2214,7 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
     for (const dataUrl of images) {
       let outputDataUrl = dataUrl
       if (task.transparentOutput) {
-        const original = await storeImageWithSize(dataUrl, 'generated')
+        const original = await storeImageWithSize(dataUrl, 'generated', requireDecoded)
         storedImageIds.push(original.id)
         cacheImage(original.id, dataUrl)
 
@@ -2224,7 +2233,7 @@ async function storeTaskOutputImages(task: TaskRecord, images: string[]) {
         }
       }
 
-      const stored = await storeImageWithSize(outputDataUrl, 'generated')
+      const stored = await storeImageWithSize(outputDataUrl, 'generated', requireDecoded)
       storedImageIds.push(stored.id)
       cacheImage(stored.id, outputDataUrl)
       outputIds.push(stored.id)
@@ -3733,8 +3742,8 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
   if (!task) return
   const execution = Symbol(taskId)
   taskExecutions.set(taskId, execution)
-  const taskProfile = getTaskApiProfile(settings, task)
-  if (!taskProfile && task.apiProfileId) {
+  const taskProfile = getTaskApiProfile(settings, task, true)
+  if (!taskProfile) {
     const error = '找不到此任务所使用的 API 配置。'
     updateTaskInStore(taskId, {
       ...createTaskErrorPatch(task, error, Date.now()),
@@ -3750,6 +3759,8 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
   taskQueueControllers.set(taskId, queueController)
   const requestSettings = createSettingsForApiProfile(settings, activeProfile)
   let requestStarted = false
+  let incrementalResults = false
+  let resultWrites = Promise.resolve()
   const taskProvider = taskProfile?.provider ?? task.apiProvider ?? activeProfile.provider
   let falRequestInfo: { requestId: string; endpoint: string } | null = task.falRequestId && task.falEndpoint
         ? { requestId: task.falRequestId, endpoint: task.falEndpoint }
@@ -3795,10 +3806,62 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
       skipCodexCliSizePrompt: task.sourceMode === 'agent',
       isCancelled: () => taskExecutions.get(taskId) !== execution,
       signal: queueController.signal,
+      onImageResult: (event) => {
+        const receivedAt = Date.now()
+        // 同任务并发结果按到达顺序串行落盘，防止互相覆盖已保存的槽位。
+        const write = resultWrites.then(async () => {
+          if (taskExecutions.get(taskId) !== execution) return
+          const before = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!before || before.status !== 'running') return
+          const requestIndex = retryIndices?.[event.requestIndex] ?? event.requestIndex
+          if (!event.result.images.length || event.requestIndex + event.result.images.length > (retryIndices?.length ?? task.params.n)) throw new Error('接口返回图片数量不符合本次请求')
+          if (before.imageRequests?.[requestIndex]?.state === 'saved') return
+          const stored = await storeTaskOutputImages(task, event.result.images, true)
+          let latest = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!latest || latest.status !== 'running' || taskExecutions.get(taskId) !== execution) {
+            await deleteUnreferencedImageIds([...stored.outputIds, ...(stored.transparentOriginalImageIds ?? [])])
+            return
+          }
+          const actual = await resolveImageSizeParamsList(stored.outputDataUrls, event.result.actualParamsList, stored.outputImageSizes)
+          latest = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (taskExecutions.get(taskId) !== execution || !latest || latest.status !== 'running') {
+            await deleteUnreferencedImageIds([...stored.outputIds, ...(stored.transparentOriginalImageIds ?? [])])
+            return
+          }
+          const requests = latest.imageRequests ?? Array.from({ length: task.params.n }, () => ({ state: 'queued' as const, queuedAt: task.createdAt }))
+          const base = incrementalResults || retryIndices ? latest : {
+            ...latest, outputImages: [], outputErrors: Array.from({ length: task.params.n }, (_, index) => ({ requestIndex: index, error: '尚未完成；中断后请确认结果再补图' })),
+          }
+          const indices = stored.outputIds.map((_, index) => retryIndices?.[event.requestIndex + index] ?? requestIndex + index)
+          const outputPatch = mergeRetriedTaskOutputs(base, indices, {
+            outputImages: stored.outputIds, actualParamsByImage: mapActualParamsByImage(stored.outputIds, actual),
+            revisedPromptByImage: mapRevisedPromptsByImage(stored.outputIds, event.result.revisedPrompts),
+            transparentOriginalImages: stored.transparentOriginalImageIds, rawImageUrls: event.result.rawImageUrls,
+          })
+          incrementalResults = true
+          try {
+            await updateTaskInStore(taskId, { ...outputPatch, imageRequests: requests.map((item, index) => indices.includes(index) ? { ...item, state: 'saving', receivedAt } : item) })
+          } catch {
+            queueController.abort()
+            const current = useStore.getState().tasks.find((item) => item.id === taskId)
+            if (current && taskExecutions.get(taskId) === execution) useStore.getState().setTasks(useStore.getState().tasks.map((item) => item.id === taskId ? { ...current, ...base, imageRequests: requests.map((entry, index) => indices.includes(index) ? { ...entry, state: 'unknown' } : entry) } : item))
+            throw new Error('图片已返回，但本地任务记录保存失败；请检查存储空间，勿直接重新生成以免重复计费')
+          }
+          if (taskExecutions.get(taskId) !== execution) return
+          const saved = useStore.getState().tasks.find((item) => item.id === taskId)
+          if (!saved) return
+          await updateTaskInStore(taskId, { imageRequests: saved.imageRequests?.map((item, index) => indices.includes(index) ? { ...item, state: 'saved', savedAt: Date.now() } : item) })
+        })
+        resultWrites = write.catch(() => {})
+        return write
+      },
       onRequestState: (event) => {
         if (taskExecutions.get(taskId) !== execution) return
         const latest = useStore.getState().tasks.find((item) => item.id === taskId)
         if (!latest || latest.status !== 'running') return
+        const slotIndex = retryIndices?.[event.requestIndex] ?? event.requestIndex
+        const requests = latest.imageRequests ?? Array.from({ length: task.params.n }, () => ({ state: 'queued' as const, queuedAt: task.createdAt }))
+        if (event.state !== 'finished') void updateTaskInStore(taskId, { imageRequests: requests.map((item, index) => index === slotIndex ? { ...item, state: event.state === 'running' ? 'running' : 'queued', ...(event.state === 'running' ? { startedAt: Date.now() } : {}) } : item) })
         if (event.state === 'finished') {
           updateTaskInStore(taskId, { generationProgress: undefined })
           return
@@ -3842,6 +3905,29 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
     if (taskExecutions.get(taskId) !== execution) return
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
       useStore.getState().setTaskStreamPreview(taskId)
+      return
+    }
+
+    if (incrementalResults) {
+      await resultWrites
+      const latest = useStore.getState().tasks.find((item) => item.id === taskId)
+      if (!latest || taskExecutions.get(taskId) !== execution) return
+      const failed = new Map(result.failedRequests?.map((item) => [retryIndices?.[item.requestIndex] ?? item.requestIndex, item.error]))
+      const outputErrors = latest.outputErrors?.map((item) => ({ ...item, error: failed.get(item.requestIndex) ?? item.error }))
+      await updateTaskInStore(taskId, {
+        ...createTaskDonePatch(latest, Date.now()), outputErrors,
+        imageRequests: latest.imageRequests?.map((item, index) => item.state === 'saved' || item.state === 'queued' ? item : { ...item, state: failed.has(index) && !/断|超时|timeout|network|fetch|abort|5\d\d|存储|保存/i.test(failed.get(index)!) ? 'failed' : 'unknown' }),
+        generationProgress: undefined, streamPartialImageIds: undefined, falRecoverable: false, customRecoverable: false,
+      })
+      void deleteUnreferencedImageIds(latest.streamPartialImageIds ?? [])
+      useStore.getState().setTaskStreamPreview(taskId)
+      const message = `生成完成：已保存 ${latest.outputImages.length}/${task.params.n} 张${outputErrors?.length ? `，未完成 ${outputErrors.length} 张` : ''}`
+      if (!batchTaskIds.has(taskId)) {
+        useStore.getState().showToast(message, outputErrors?.length ? 'error' : 'success')
+        if (!isAgentTask(task)) showTaskCompletionNotification('图像生成完成', message)
+      }
+      const currentMask = useStore.getState().maskDraft
+      if (maskDataUrl && currentMask?.maskDataUrl === maskDataUrl && currentMask.targetImageId === task.maskTargetImageId) useStore.getState().clearMaskDraft()
       return
     }
 
@@ -3972,7 +4058,8 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
       updateTaskInStore(taskId, {
         ...createTaskErrorPatch(latestTask, errorMessage, Date.now()),
         ...getRawErrorPayload(err),
-        ...(retryIndices ? {
+        ...(latestTask.imageRequests ? { imageRequests: latestTask.imageRequests?.map((item) => item.state === 'saved' || item.state === 'queued' ? item : { ...item, state: 'unknown' as const }) } : {}),
+        ...(retryIndices && !incrementalResults ? {
           ...mergeRetriedTaskOutputs(task, retryIndices, { outputImages: [], outputErrors: retryIndices.map((_, requestIndex) => ({ requestIndex, error: errorMessage })) }),
           status: 'done' as const,
           error: null,
@@ -3995,6 +4082,7 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
   }
 }
 
+/** 更新内存任务并返回持久化完成信号；最终图片保存必须等待该信号。 */
 export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   const { tasks, setTasks, defaultFavoriteCollectionId } = useStore.getState()
   const updated = tasks.map((t) =>
@@ -4003,7 +4091,9 @@ export function updateTaskInStore(taskId: string, patch: Partial<TaskRecord>) {
   const task = updated.find((t) => t.id === taskId)
   setTasks(updated)
   maybeOpenSupportPrompt(tasks, updated, taskId)
-  if (task) putTask(task)
+  const write = task ? putTask(task) : Promise.resolve(undefined)
+  void write.catch(() => console.warn('任务记录保存失败，请检查本地存储空间'))
+  return write
 }
 
 export function createFavoriteCollection(name: string) {
@@ -4096,7 +4186,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 }
 
 /** 画廊失败原地重试；部分失败只补选中或全部失败位置，成功任务另建一组，Agent 保持原规则。 */
-export async function retryTask(task: TaskRecord, requestIndex?: number) {
+export async function retryTask(task: TaskRecord, requestIndex?: number, confirmUnknown = false) {
   const { settings, tasks } = useStore.getState()
   const source = tasks.find((item) => item.id === task.id)
   if (!source || source.status === 'running' || source.falRecoverable || source.customRecoverable) return
@@ -4104,9 +4194,18 @@ export async function retryTask(task: TaskRecord, requestIndex?: number) {
     ? source.outputErrors.filter((item) => requestIndex === undefined || item.requestIndex === requestIndex).map((item) => item.requestIndex).sort((a, b) => a - b)
     : undefined
   if (requestIndex !== undefined && !retryIndices?.length) return
-  const activeProfile = source.apiProfileId ? getTaskApiProfile(settings, source) : getActiveApiProfile(settings)
+  if (!confirmUnknown && source.imageRequests?.some((item, index) => item.state === 'unknown' && (retryIndices ? retryIndices.includes(index) : requestIndex === undefined || index === requestIndex))) {
+    useStore.getState().setConfirmDialog({
+      title: '确认重新生成未知结果？',
+      message: '部分请求已经发送，但未确认最终结果，可能已计费。请先核对服务方记录；继续补图可能再次计费，已保存图片将保留。',
+      confirmText: '确认补图', cancelText: '暂不重试',
+      action: () => { void retryTask(source, requestIndex, true) },
+    })
+    return
+  }
+  const activeProfile = getTaskApiProfile(settings, source, true)
   if (!activeProfile) {
-    useStore.getState().showToast('原任务的配置已不存在，请先重新选择配置并复用参数生成。', 'error')
+    useStore.getState().showToast('原任务的配置已不存在或原模型无法确认，请恢复原配置，或明确复用参数创建新任务。', 'error')
     return
   }
   const grokInputError = getGrokImageInputError(activeProfile, source.inputImageIds.length, Boolean(source.maskImageId))
@@ -4114,7 +4213,13 @@ export async function retryTask(task: TaskRecord, requestIndex?: number) {
     useStore.getState().showToast(grokInputError, 'error')
     return
   }
-  const normalizedParams = normalizeParamsForSettings(source.params, createSettingsForApiProfile(settings, activeProfile), { hasInputImages: source.inputImageIds.length > 0 })
+  const retrySettings = createSettingsForApiProfile(settings, activeProfile)
+  const parameterError = getImageSubmissionError(source.params, retrySettings)
+  if (parameterError) {
+    useStore.getState().showToast(parameterError, 'error')
+    return
+  }
+  const normalizedParams = normalizeParamsForSettings(source.params, retrySettings, { hasInputImages: source.inputImageIds.length > 0 })
   const shouldUseTransparentOutput = (normalizedParams.output_format === 'png' || normalizedParams.output_format === 'webp') && normalizedParams.transparent_output
   const taskParams = shouldUseTransparentOutput
     ? getTransparentRequestParams(normalizedParams)
@@ -4148,6 +4253,7 @@ export async function retryTask(task: TaskRecord, requestIndex?: number) {
     actualParamsByImage: retryIndices ? source.actualParamsByImage : undefined,
     revisedPromptByImage: retryIndices ? source.revisedPromptByImage : undefined,
     rawImageUrls: retryIndices ? source.rawImageUrls : undefined,
+    imageRequests: retryIndices ? source.imageRequests?.map((item, index) => retryIndices.includes(index) ? { state: 'queued' as const, queuedAt: startedAt } : item) : undefined,
     generationProgress: undefined,
     rawResponsePayload: undefined,
     streamPartialImageIds: undefined,

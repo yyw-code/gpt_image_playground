@@ -23,13 +23,24 @@ export async function callImageApi(opts: CallApiOptions): Promise<CallApiResult>
     if (!opts.prompt.trim()) throw new Error('请输入提示词')
   }
   const params = normalizeParamsForSettings(opts.params, opts.settings, { hasInputImages: opts.inputImageDataUrls.length > 0 })
+  let delivered = false
   const result = await callOpenAICompatibleImageApi({
     ...opts,
     params,
+    onImageResult: opts.onImageResult ? async (event) => {
+      delivered = true
+      await opts.onImageResult?.({ ...event, result: profile.provider === 'openai' ? normalizeFinalImageResult(event.result) : event.result })
+    } : undefined,
     nativeTransparentBackground: getImageParameterCapabilities(profile).nativeOutput
       && (profile.provider !== 'openai' || params.output_format !== 'jpeg') && opts.nativeTransparentBackground,
   }, profile, getCustomProviderDefinition(opts.settings, profile.provider))
+  if (!delivered) await opts.onImageResult?.({ requestIndex: 0, result: profile.provider === 'openai' ? normalizeFinalImageResult(result) : result })
   if (profile.provider !== 'openai') return result
+  return normalizeFinalImageResult(result)
+}
+
+/** 最终回调与整批返回使用相同的 MIME 和实际格式，避免逐张保存丢失元数据。 */
+function normalizeFinalImageResult(result: CallApiResult): CallApiResult {
   const actualParamsList = result.images.map((image, index) => {
     const format = getBase64ImageFormat(image)
     return { ...(result.actualParamsList?.[index] ?? result.actualParams), ...(format ? { output_format: format } : {}) }

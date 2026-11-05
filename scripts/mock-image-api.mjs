@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { createFixturePng } from './mock-image-fixture.mjs'
 
 const port = Number(process.env.MOCK_IMAGE_API_PORT || 8787)
 const host = process.env.MOCK_IMAGE_API_HOST || '127.0.0.1'
@@ -8,6 +9,7 @@ const tinyPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42
 const tinyPng = Buffer.from(tinyPngBase64, 'base64')
 
 const pathModes = new Set([
+  'batch-lab',
   'api-no-cors',
   'alternating-http-error',
   'b64',
@@ -32,6 +34,8 @@ const pathModes = new Set([
 ])
 
 const alternatingModeCounters = new Map()
+const labCounters = new Map()
+const labReports = []
 
 function appendCors(headers, enabled = true) {
   if (!enabled) return headers
@@ -311,10 +315,33 @@ async function maybeSendStreamFailure(res, mode, prefix = 'image_generation') {
   return false
 }
 
+/** 本地生成接口；batch-lab 只使用合成夹具与指定故障，不调用外网且不记录密钥。 */
 async function handleApi(req, res, url) {
   const body = req.method === 'GET' ? { json: null } : await readBody(req)
   const mode = getMode(url, body.json)
   const n = getRequestedN(url, body.json)
+
+  if (mode === 'batch-lab') {
+    const input = body.json ?? {}
+    const prompt = String(input.prompt ?? '')
+    const index = (labCounters.get(prompt) ?? 0) + 1
+    labCounters.set(prompt, index)
+    const delay = Number(prompt.match(/MOCK_DELAY_(\d+)/)?.[1] ?? 100)
+    labReports.push({ index, model: input.model, n: input.n, size: input.size, resolution: input.resolution, aspect_ratio: input.aspect_ratio, quality: input.quality, at: Date.now() })
+    if (labReports.length > 100) labReports.shift()
+    await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 15000)))
+    if (index === Number(prompt.match(/MOCK_DISCONNECT_(\d+)/)?.[1])) { res.destroy(); return }
+    if (index === Number(prompt.match(/MOCK_FAIL_(\d+)/)?.[1])) { sendJson(res, 400, { error: { message: '本地模拟指定槽位失败' } }); return }
+    if (index === Number(prompt.match(/MOCK_429_(\d+)/)?.[1])) { res.setHeader('Retry-After', '1'); sendJson(res, 429, { error: { message: '本地模拟限流' } }); return }
+    const size = String(input.size ?? '').match(/^(\d+)x(\d+)$/)
+    const ratio = String(input.aspect_ratio ?? '1:1').split(':').map(Number)
+    const edge = input.resolution === '2k' ? 2048 : 1024
+    const width = size ? Number(size[1]) : ratio[0] >= ratio[1] ? edge : Math.round(edge * ratio[0] / ratio[1])
+    const height = size ? Number(size[2]) : ratio[0] >= ratio[1] ? Math.round(edge * ratio[1] / ratio[0]) : edge
+    const png = createFixturePng(width || edge, height || edge, index).toString('base64')
+    sendJson(res, 200, { data: [{ b64_json: index === Number(prompt.match(/MOCK_BAD_(\d+)/)?.[1]) ? 'broken' : png }] })
+    return
+  }
 
   if (mode === 'slow') {
     const delayMs = Math.max(1, Number(url.searchParams.get('delayMs') || 15000))
@@ -510,6 +537,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (url.pathname === '/lab/report') { sendJson(res, 200, labReports); return }
+    if (url.pathname.endsWith('/models')) { sendJson(res, 200, { data: ['gpt-image-2', 'grok-imagine-image-2.0'].map((id) => ({ id, object: 'model' })) }); return }
     if (isOpenAIImagesPath(url.pathname)) {
       await handleApi(req, res, url)
       return

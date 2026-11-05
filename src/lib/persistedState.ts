@@ -15,6 +15,12 @@ export interface PersistedAppState {
   galleryParams?: TaskParams
   agentParams?: TaskParams
   prompt?: string
+  /** 随草稿保存复用来源身份，不复制该配置的密钥。 */
+  reusedTaskApiProfileId?: string | null
+  reusedTaskApiProfileScope?: AppMode
+  reusedTaskApiProfileName?: string | null
+  reusedTaskApiProfileMissing?: boolean
+  reusedTaskApiModel?: string | null
   inputImages?: InputImage[]
   dismissedCodexCliPrompts: string[]
   appMode: AppMode
@@ -96,7 +102,7 @@ function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
   }
 }
 
-/** 保存两套独立参数及输入草稿；params 保留为当前工作区的兼容字段。 */
+/** 保存独立参数及草稿来源身份，避免刷新后悄悄改用另一套配置；不复制来源密钥。 */
 export function createPersistedState(state: PersistedStateSource, includeLegacyAgentConversations = false): PersistedAppState {
   const settings = normalizeSettings(state.settings)
   const galleryInputDraft = saveGalleryInputDraft(state)
@@ -111,6 +117,11 @@ export function createPersistedState(state: PersistedStateSource, includeLegacyA
     ...(settings.persistInputOnRestart && (state.appMode === 'gallery' || galleryInputDraft)
       ? {
           prompt: galleryInputDraft?.prompt ?? '',
+          reusedTaskApiProfileId: state.reusedTaskApiProfileId ?? null,
+          reusedTaskApiProfileScope: state.reusedTaskApiProfileScope ?? 'gallery',
+          reusedTaskApiProfileName: state.reusedTaskApiProfileName ?? null,
+          reusedTaskApiProfileMissing: state.reusedTaskApiProfileMissing ?? false,
+          reusedTaskApiModel: state.reusedTaskApiModel ?? null,
           inputImages: galleryInputDraft?.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) ?? [],
         }
       : {}),
@@ -143,7 +154,7 @@ export function migratePersistedState(persistedState: unknown, _version?: number
   }
 }
 
-/** 恢复独立配置和参数；旧版共享参数复制到两边，后续修改互不影响。 */
+/** 恢复独立配置、参数及草稿复用身份；身份失效由提交校验阻止自动回退。 */
 export function normalizePersistedState(
   persistedState: unknown,
   fallback: PersistedStateFallback,
@@ -214,6 +225,11 @@ export function normalizePersistedState(
   return {
     state: {
       settings,
+      reusedTaskApiProfileId: settings.persistInputOnRestart && typeof persistedState.reusedTaskApiProfileId === 'string' ? persistedState.reusedTaskApiProfileId : null,
+      reusedTaskApiProfileScope: persistedState.reusedTaskApiProfileScope === 'agent' ? 'agent' : 'gallery',
+      reusedTaskApiProfileName: settings.persistInputOnRestart && typeof persistedState.reusedTaskApiProfileName === 'string' ? persistedState.reusedTaskApiProfileName : null,
+      reusedTaskApiProfileMissing: settings.persistInputOnRestart && persistedState.reusedTaskApiProfileMissing === true,
+      reusedTaskApiModel: settings.persistInputOnRestart && typeof persistedState.reusedTaskApiModel === 'string' ? persistedState.reusedTaskApiModel : null,
       previousPresetConfig,
       dismissedPresetProfileIds: normalizeStringArray(persistedState.dismissedPresetProfileIds, fallback.dismissedPresetProfileIds ?? []),
       dismissedPresetProviderIds: normalizeStringArray(persistedState.dismissedPresetProviderIds, fallback.dismissedPresetProviderIds ?? []),

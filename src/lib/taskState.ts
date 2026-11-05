@@ -1,4 +1,5 @@
 import type { ApiProvider, TaskParams, TaskRecord } from '../types'
+import { getTaskOutputSlots } from './taskOutputRetry'
 
 type TaskLifecyclePatch = Pick<TaskRecord, 'status' | 'error' | 'finishedAt' | 'elapsed'>
 type ActualParams = Partial<TaskParams>
@@ -28,10 +29,15 @@ export function markInterruptedOpenAIRunningTasks(tasks: TaskRecord[], now: numb
   const updatedTasks = tasks.map((task) => {
     const isOpenAITask = (task.apiProvider ?? 'openai') !== 'fal'
     if (task.status !== 'running' || !isOpenAITask || task.customTaskId) return task
+    const slots = getTaskOutputSlots(task)
 
     const updated: TaskRecord = {
       ...task,
       ...createTaskErrorPatch(task, '请求中断', now),
+      // saving 与图片引用在同一次任务写入中提交；刷新读到引用即可确认该槽已保存。
+      imageRequests: task.imageRequests?.map((item, index) => item.state === 'saving' && slots[index]?.imageId
+        ? { ...item, state: 'saved' }
+        : item.state === 'running' || item.state === 'saving' ? { ...item, state: 'unknown' } : item),
       generationProgress: undefined,
       falRecoverable: false,
       elapsed: Math.max(0, now - (task.startedAt ?? task.createdAt)),
@@ -87,7 +93,7 @@ export function deriveGalleryActualParams(
   const firstParams = firstActualParams(paramsList)
   return {
     ...resultParams,
-    size: resultParams?.size ?? firstParams?.size,
+    size: firstParams?.size ?? resultParams?.size,
     n: outputCount,
   }
 }

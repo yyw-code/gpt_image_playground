@@ -156,6 +156,12 @@ describe('详情原图尺寸与比例', () => {
     expect(container.textContent).toContain('16:9')
   })
 
+  it('按当前槽位显示排队、接口传输和本地保存时间，旧任务不伪造耗时', async () => {
+    task.imageRequests = [{ state: 'saved', queuedAt: 1000, startedAt: 3000, receivedAt: 25000, savedAt: 25500 }]
+    const { container } = await renderDetail()
+    expect(container.querySelector('[aria-label="本张图片耗时"]')?.textContent).toBe('排队 2.0 秒接口等待与传输 22.0 秒本地处理与保存 0.5 秒')
+  })
+
   it('Grok 2.0 展示质量回显、实际格式及未满额张数，原始 JPEG 不标成 PNG 不匹配', async () => {
     task.apiProvider = 'grok'
     task.apiModel = 'grok-imagine-image-2.0'

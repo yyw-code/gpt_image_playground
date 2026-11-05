@@ -288,10 +288,11 @@ export default function TaskCard({
     }
   }, [nearViewport, task.outputImages])
 
+  // 请求开始时间可能晚于上一帧时钟，首帧耗时下限为零。
   const duration = (() => {
     let seconds: number
     if (task.status === 'running' || task.falRecoverable || task.customRecoverable) {
-      seconds = Math.floor((now - (task.startedAt ?? task.createdAt)) / 1000)
+      seconds = Math.max(0, Math.floor((now - (task.startedAt ?? task.createdAt)) / 1000))
     } else if (task.elapsed != null) {
       seconds = Math.floor(task.elapsed / 1000)
     } else {
@@ -330,7 +331,7 @@ export default function TaskCard({
   const outputErrorCount = task.outputErrors?.length ?? 0
   const outputSuccessCount = task.outputImages?.length ?? 0
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
-  const hasPartialOutputFailure = task.status === 'done' && outputErrorCount > 0
+  const hasPartialOutputFailure = task.status !== 'running' && outputSuccessCount > 0 && outputErrorCount > 0
 
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
@@ -471,7 +472,7 @@ export default function TaskCard({
               </span>
             </div>
           )}
-          {task.status === 'error' && !isFalReconnecting && (
+          {task.status === 'error' && !isFalReconnecting && !thumbSrc && (
             <div className="flex flex-col items-center gap-1 px-2">
               <svg
                 className={`w-7 h-7 ${isInterrupted ? 'text-yellow-400' : 'text-red-400'}`}
@@ -491,7 +492,7 @@ export default function TaskCard({
               </span>
             </div>
           )}
-          {(task.status === 'done' || task.status === 'running') && thumbSrc && (
+          {thumbSrc && (
             <>
               <img
                 src={thumbSrc}
@@ -649,6 +650,12 @@ export default function TaskCard({
                 </span>
               )}
             </div>
+            {task.imageRequests && <div className="text-xs text-gray-500" title="已保存表示最终图片与任务记录已写入本地；请求中断的结果不会自动重发">
+              已保存 {task.imageRequests.filter((item) => item.state === 'saved').length}/{task.params.n}
+              {task.status === 'running' && ` · 进行中 ${task.imageRequests.filter((item) => item.state === 'running' || item.state === 'saving').length} · 待发送 ${task.imageRequests.filter((item) => item.state === 'queued').length}`}
+              {task.imageRequests.some((item) => item.state === 'failed') && ` · 失败 ${task.imageRequests.filter((item) => item.state === 'failed').length}`}
+              {task.imageRequests.some((item) => item.state === 'unknown') && ' · 有结果待确认'}
+            </div>}
             {/* 操作按钮 */}
             <div
               data-tag-scroll-area

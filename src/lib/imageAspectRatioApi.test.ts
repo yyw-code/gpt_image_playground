@@ -45,7 +45,7 @@ describe('本站比例提示与原参数兼容', () => {
     const originalParams = { ...params }
     const result = await callImageApi({ settings, params, prompt, inputImageDataUrls: edit ? [referenceImage] : [] })
     const submits = fetchMock.mock.calls.filter(([url]) => String(url).startsWith(profile.baseUrl))
-    expect(submits).toHaveLength(1)
+    expect(submits).toHaveLength(3)
     const [url, init] = submits[0]
     expect(url).toBe(`${profile.baseUrl}/images/${edit ? 'edits' : 'generations'}`)
     if (edit) {
@@ -55,11 +55,11 @@ describe('本站比例提示与原参数兼容', () => {
       expect(body.get('quality')).toBe('high')
       expect(body.get('output_format')).toBe('webp')
       expect(body.get('output_compression')).toBe('80')
-      expect(body.get('n')).toBe('3')
+      expect(body.get('n') ?? '1').toBe('1')
       expect(body.get('image[]')).toBeInstanceOf(Blob)
     } else {
-      expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
-        prompt: `${prompt}\n\n${composition}`, size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, n: 3,
+      expect({ ...JSON.parse(String((init as RequestInit).body)), n: JSON.parse(String((init as RequestInit).body)).n ?? 1 }).toMatchObject({
+        prompt: `${prompt}\n\n${composition}`, size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, n: 1,
       })
     }
     expect(params).toEqual(originalParams)
@@ -140,7 +140,10 @@ describe('本站比例提示与原参数兼容', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'quota exhausted' } }), { status: 429 }))
     const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
     await expect(callImageApi({ settings, params, prompt, inputImageDataUrls: [] })).rejects.toThrow('quota exhausted')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toMatchObject({ size: '2016x864', quality: 'high', n: 3 })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    for (const [, init] of fetchMock.mock.calls) {
+      const body = JSON.parse(String((init as RequestInit).body))
+      expect({ ...body, n: body.n ?? 1 }).toMatchObject({ size: '2016x864', quality: 'high', n: 1 })
+    }
   })
 })

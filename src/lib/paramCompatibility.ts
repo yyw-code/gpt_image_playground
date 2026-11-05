@@ -83,3 +83,18 @@ export function getChangedParams(current: TaskParams, next: TaskParams): Partial
   }
   return patch
 }
+
+/** 提交前校验张数及硬参数；禁止静默降级，返回可操作的错误，不修改草稿。 */
+export function getImageSubmissionError(params: TaskParams, settings: AppSettings, promptCount = 1): string | null {
+  if (!Number.isInteger(params.n) || params.n < 1 || params.n > getOutputImageLimitForSettings(settings) || params.n * promptCount > 10) return '一次提交最多生成 10 张图片，请调整提示词条数或每条张数。'
+  const profile = getActiveApiProfile(settings)
+  const capabilities = getImageParameterCapabilities(profile)
+  if (profile.provider === 'grok') {
+    if (params.aspect_ratio !== undefined && !getGrokAspectRatios(profile.model).includes(params.aspect_ratio)) return '当前 Grok 模型不支持所选比例，请重新选择。'
+    if (params.resolution !== undefined && !normalizeGrokResolution(params.resolution)) return 'Grok 仅支持 1K/2K 分辨率档位，请重新选择。'
+  } else if (profile.provider === 'openai' && capabilities.sizeMode !== 'composition' && params.size !== 'auto' && normalizeModelImageSize(params.size, capabilities.sizeMode) !== params.size) {
+    return '当前模型不支持所选尺寸，请重新选择。'
+  }
+  if (profile.provider !== 'fal' && !capabilities.qualities.includes(params.quality)) return '当前模型或通道不支持所选质量，请重新选择。'
+  return null
+}
