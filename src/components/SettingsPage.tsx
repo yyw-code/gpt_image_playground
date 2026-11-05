@@ -11,6 +11,7 @@ import { getSiteConnection, isSiteApiProfile } from '../lib/siteProfiles'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
+  convertGalleryProfileToImages,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -46,7 +47,7 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { createCustomProfileImportUrl } from '../lib/profileImportUrl'
 import { getProfileImportBaseUrl, handledImportLinks } from '../lib/importLink'
 import { requestBrowserNotificationPermission, type BrowserNotificationPermissionResult } from '../lib/browserNotification'
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, REASONING_EFFORT_VALUES, type AgentApiConfigMode, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ReasoningEffort, type ZipDownloadRoute } from '../types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type AgentApiConfigMode, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ZipDownloadRoute } from '../types'
 import {
   CUSTOM_PROVIDER_LLM_PROMPT,
   DEFAULT_CUSTOM_PROVIDER_JSON,
@@ -317,7 +318,7 @@ export default function SettingsPage() {
     const nextDraft = normalizeSettings({
       ...normalizedSettings,
       profiles: normalizedSettings.profiles.map((profile) => ({
-        ...profile,
+        ...(!isPresetProfileLocked(profile.id) && (!IS_SITE_MODE || isSiteApiProfile(profile)) ? convertGalleryProfileToImages(profile) : profile),
         // 客户端不使用代理，但保留已保存的设置，导回网页版时仍然有效
         apiProxy: IS_SITE_MODE ? profile.apiProxy : isProfileApiProxyEligible(normalizedSettings, profile) && apiProxyAvailable
           ? (apiProxyLocked || profile.apiProxy)
@@ -372,9 +373,11 @@ export default function SettingsPage() {
     }
   }, [profileTouchDragPreview])
 
-  /** 保存草稿并规范化供应商能力；本站连接由部署管理，外站历史配置保持原样。 */
+  /** 保存画廊草稿并转换可编辑的旧 Responses 配置；不改 Agent、锁定预置或外站历史配置。 */
   const commitSettings = (nextDraft: AppSettings) => {
-    const normalizedProfiles = nextDraft.profiles.map((profile) => {
+    const normalizedProfiles = nextDraft.profiles.map((originalProfile) => {
+      const profile = !isPresetProfileLocked(originalProfile.id) && (!IS_SITE_MODE || isSiteApiProfile(originalProfile))
+        ? convertGalleryProfileToImages(originalProfile) : originalProfile
       if (IS_SITE_MODE) return profile
       const nextApiProxy = isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false
       const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
@@ -389,7 +392,7 @@ export default function SettingsPage() {
         ...profile,
         name: profile.name.trim() || (profile.id === defaultProfileId ? '默认' : '新配置'),
         baseUrl: normalizedBaseUrl,
-        model: profile.model.trim() || defaultModel,
+        model: profile.provider === 'openai' ? profile.model.trim() : profile.model.trim() || defaultModel,
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
         apiProxy: isTauri ? profile.apiProxy : nextApiProxy,
         codexCli: isOpenAICompatibleProvider(nextDraft, profile.provider) ? profile.codexCli : false,
@@ -679,10 +682,10 @@ export default function SettingsPage() {
     setTimeoutInput(String(getActiveApiProfile(nextDraft).timeout))
   }
 
-  /** 新建待编辑的图片配置，密钥为空；启用需用户显式选择，Agent 配置不受影响。 */
+  /** 新建 Images 图片配置，密钥为空；显式启用才切换，Agent 配置不受影响。 */
   const createNewProfile = () => {
     if (presetConfigOnly) return
-    const profile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置', ...(IS_SITE_MODE ? { ...siteConnection, apiKey: '' } : {}) })
+    const profile = createDefaultOpenAIProfile({ id: newId('openai'), name: '新配置', apiMode: 'images', model: DEFAULT_IMAGES_MODEL, ...(IS_SITE_MODE ? { ...siteConnection, apiKey: '' } : {}) })
     const nextDraft = normalizeSettings({ 
         ...draft, 
         profiles: [...draft.profiles, profile],
@@ -1441,25 +1444,16 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {/* 6. API 接口（Images/Responses） */}
+              {/* 图片配置仅提供 Images；锁定的旧预置保留原协议并提示管理员处理。 */}
               {activeProfile.provider === 'openai' && (
                 <div className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API 接口</span>
-                  <Select
-                    value={activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode}
-                    onChange={(value) => {
-                      const apiMode = value as AppSettings['apiMode']
-                      updateActiveProfile({ apiMode }, true)
-                    }}
-                    options={[
-                      { label: '直接生图（Images API）', value: 'images' },
-                      { label: '对话与 Agent（Responses API）', value: 'responses' },
-                    ]}
-                    disabled={activeProfileLocked}
-                    className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
-                  />
-                <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    Images 直接调用图片模型；Responses 由文本模型调用生图工具，需要填写支持该工具的文本模型。Agent 的对话配置请在 Agent 页设置。
+                  <div className="rounded-xl bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 dark:bg-white/[0.06] dark:text-gray-200">
+                    {activeProfile.apiMode === 'responses' ? '旧版 Responses 预置（已锁定）' : '直接生图（Images API）'}
+                  </div>
+                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
+                    {activeProfile.apiMode === 'responses' ? '此预置已锁定，请联系管理员将图片配置改为 Images API。' : '图片配置直接调用图片模型；对话与 Agent 请在 Agent 配置页设置。'}
+                    {!activeProfile.model.trim() && <p role="status" className="mt-1 text-amber-600">请先选择图片模型；旧配置未指定图像工具模型时，不会沿用原文本模型。</p>}
                   </div>
                 </div>
               )}
@@ -1472,30 +1466,6 @@ export default function SettingsPage() {
                 onChange={updateActiveProfile}
                 onCommit={commitActiveProfilePatch}
               />
-
-              {(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' && activeProfile.provider === 'openai' && (
-                <div className="block">
-                  <div className="mb-1.5 flex items-center justify-between gap-3">
-                    <span className="block text-sm text-gray-600 dark:text-gray-300">推理强度</span>
-                    <div className="w-28 shrink-0">
-                      <Select
-                        value={activeProfile.reasoningEffort ?? ''}
-                        onChange={(value) => updateActiveProfile({ reasoningEffort: value ? value as ReasoningEffort : undefined }, true)}
-                        options={[
-                          { label: '默认', value: '' },
-                          ...REASONING_EFFORT_VALUES.map((value) => ({ label: value, value })),
-                        ]}
-                        disabled={activeProfileLocked}
-                        className="w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-1.5 text-xs text-gray-700 outline-none transition focus:border-blue-300 dark:bg-white/[0.06] dark:text-gray-200 dark:focus:border-blue-500/50"
-                      />
-                    </div>
-                  </div>
-                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    用于指导模型在执行任务时的思考深度，更高的档位会使模型花费更长时间进行思考，有助于提升 Agent 模式下模型完成复杂任务的能力。并非所有模型都支持全部推理强度。
-                    {!IS_SITE_MODE && <>支持通过链接参数导入：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?reasoningEffort=high</code>。</>}
-                  </div>
-                </div>
-              )}
 
               <details>
                 <summary className="cursor-pointer text-sm font-medium text-gray-600 dark:text-gray-300">高级设置</summary>

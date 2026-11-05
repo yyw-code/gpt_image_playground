@@ -576,7 +576,7 @@ function normalizeProviderDrafts(
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
-/** 规范化持久化或导入的配置，保留旧供应商行为并约束 Grok 的专属能力。 */
+/** 规范化配置；保留 OpenAI 显式空模型用于待填写状态，约束供应商的专属能力。 */
 export function normalizeApiProfile(
   input: unknown,
   fallback?: Partial<ApiProfile>,
@@ -612,7 +612,9 @@ export function normalizeApiProfile(
     provider,
     baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
-    model: (typeof record.model === 'string' && normalizeModelList(record.model)) || defaults.model,
+    model: provider === 'openai' && apiMode === 'images' && typeof record.model === 'string'
+      ? normalizeModelList(record.model)
+      : (typeof record.model === 'string' && normalizeModelList(record.model)) || defaults.model,
     selectedModel: typeof record.selectedModel === 'string' && record.selectedModel.trim() ? record.selectedModel.trim() : undefined,
     imageGenerationModel: typeof record.imageGenerationModel === 'string'
       ? record.imageGenerationModel.trim()
@@ -995,6 +997,18 @@ export function splitModelList(value: string) {
 
 export function normalizeModelList(value: string) {
   return splitModelList(value).join(', ')
+}
+
+/** 仅供画廊编辑入口转换旧 Responses 配置；空工具模型保持待填写，调用方负责预置锁定。 */
+export function convertGalleryProfileToImages(profile: ApiProfile): ApiProfile {
+  if (profile.provider !== 'openai' || profile.apiMode !== 'responses') return profile
+  return {
+    ...profile,
+    apiMode: 'images',
+    model: normalizeModelList(profile.imageGenerationModel ?? ''),
+    selectedModel: undefined,
+    reasoningEffort: undefined,
+  }
 }
 
 /** 将模型列表解析为实际请求使用的单个模型，优先使用 preferred，其次是首页选中的模型 */

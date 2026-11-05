@@ -43,7 +43,7 @@ beforeEach(() => {
   setPresetConfig({ customProviders: [], profiles: [site] })
   mocks.state = {
     showSettings: true, tasks: [], agentConversations: [],
-    settings: normalizeSettings({ profiles: [{ ...site, apiKey: 'fixture-openai-key', model: 'saved-openai-model', apiMode: 'responses' }] }),
+    settings: normalizeSettings({ profiles: [{ ...site, apiKey: 'fixture-openai-key', model: 'saved-openai-model', apiMode: 'images' }] }),
     setSettings: vi.fn((settings: AppSettings) => { mocks.state.settings = enforcePresetConfigPolicy(normalizeSettings(settings)) }),
     setShowSettings: vi.fn(), setReusedTaskApiProfile: vi.fn(), showToast: vi.fn(),
   }
@@ -84,6 +84,66 @@ function chooseProvider(container: HTMLElement, label: string) {
 }
 
 describe('配置页的生图类型选择', () => {
+  it('图片配置只展示 Images，旧 Responses 保存时使用图像工具模型并保留 Agent 副本', () => {
+    const legacy = { ...site, apiKey: 'fixture', apiMode: 'responses' as const, model: 'text-model', selectedModel: 'text-model', imageGenerationModel: 'gpt-image-2.6-flare' }
+    mocks.state.settings = normalizeSettings({ profiles: [legacy], agentProfiles: [legacy], agentTextProfileId: legacy.id })
+    const agentBefore = (mocks.state.settings as AppSettings).agentProfiles
+    const container = renderSettings()
+    const api = field(container, 'API 接口')
+    expect(api.textContent).toContain('直接生图（Images API）')
+    expect(api.querySelector('.cursor-pointer')).toBeNull()
+    expect(container.querySelector('[aria-label="选择文本模型 ID"]')).toBeNull()
+    expect(container.querySelector<HTMLInputElement>('[aria-label="选择图片模型 ID"]')?.previousElementSibling).toHaveProperty('value', 'gpt-image-2.6-flare')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
+    const saved = mocks.state.settings as AppSettings
+    expect(saved.profiles[0]).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.6-flare', selectedModel: undefined })
+    expect(saved.agentProfiles).toEqual(agentBefore)
+  })
+
+  it.each([true, false])('旧工具模型为空时保留待选择状态，不填入文本模型或默认模型，site=%s', (siteMode) => {
+    mocks.siteMode.IS_SITE_MODE = siteMode
+    const legacy = { ...site, apiMode: 'responses' as const, model: 'text-model', imageGenerationModel: '' }
+    mocks.state.settings = normalizeSettings({ profiles: [legacy] })
+    const container = renderSettings()
+    expect(container.querySelector('[aria-label="选择图片模型 ID"]')?.previousElementSibling).toHaveProperty('value', '')
+    expect(container.textContent).toContain('请先选择图片模型')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'images', model: '' })
+  })
+
+  it('锁定的旧 Responses 预置不被转换，并提示管理员处理', () => {
+    mocks.locked = true
+    const legacy = { ...site, apiMode: 'responses' as const, model: 'text-model', imageGenerationModel: 'gpt-image-2.6-flare' }
+    mocks.state.settings = normalizeSettings({ profiles: [legacy] })
+    const container = renderSettings()
+    expect(container.textContent).toContain('旧版 Responses 预置（已锁定）')
+    expect(container.textContent).toContain('请联系管理员')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'responses', model: 'text-model' })
+  })
+
+  it('保存本站配置时不转换外站历史 Responses 配置', () => {
+    const settings = mocks.state.settings as AppSettings
+    const external = { ...site, id: 'external', baseUrl: 'https://other.example/v1', apiMode: 'responses' as const, model: 'external-text', imageGenerationModel: 'gpt-image-2.6-flare' }
+    mocks.state.settings = normalizeSettings({ ...settings, profiles: [...settings.profiles, external] })
+    const container = renderSettings()
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
+    expect((mocks.state.settings as AppSettings).profiles.find((profile) => profile.id === external.id)).toEqual(external)
+  })
+
+  it('切回旧 OpenAI 草稿时同样转换为 Images 并使用工具模型', () => {
+    const settings = mocks.state.settings as AppSettings
+    const profile = settings.profiles[0]
+    mocks.state.settings = normalizeSettings({ ...settings, profiles: [{
+      ...profile,
+      provider: 'grok', model: 'grok-imagine-image',
+      providerDrafts: { openai: { ...profile, apiMode: 'responses', model: 'text-model', imageGenerationModel: 'gpt-image-2.6-sunburst' } },
+    }] })
+    const container = renderSettings()
+    chooseProvider(container, 'OpenAI 兼容接口')
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.6-sunburst' })
+    expect(field(container, 'API 接口').textContent).toContain('直接生图（Images API）')
+  })
   it('使用独立设置页面，提供返回工作台入口和常驻配置列表', () => {
     const container = renderSettings(false)
     expect(container.querySelector('[data-settings-page]')).not.toBeNull()
@@ -203,14 +263,14 @@ describe('配置页的生图类型选择', () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUg==' }] })))
     await callImageApi({ settings: restored, prompt: '帮我生成一张小猫图片', params: { ...DEFAULT_PARAMS, resolution: '1k', aspect_ratio: '1:1' }, inputImageDataUrls: [] })
     expect(fetch).toHaveBeenCalledOnce()
-    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({ model: 'grok-imagine-image-2.0', prompt: '帮我生成一张小猫图片', n: 1, response_format: 'b64_json', resolution: '1k', aspect_ratio: '1:1' })
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({ model: 'grok-imagine-image-2.0', prompt: '帮我生成一张小猫图片', n: 1, response_format: 'b64_json', resolution: '1k', aspect_ratio: '1:1', quality: 'auto' })
   })
 
   it('切回 OpenAI 恢复原有模型和接口，本站连接不受草稿影响', () => {
     const container = renderSettings()
     chooseProvider(container, 'Grok（Sub2API）')
     chooseProvider(container, 'OpenAI 兼容接口')
-    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ provider: 'openai', baseUrl: site.baseUrl, apiProxy: true, model: 'saved-openai-model', apiMode: 'responses', apiKey: '' })
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ provider: 'openai', baseUrl: site.baseUrl, apiProxy: true, model: 'saved-openai-model', apiMode: 'images', apiKey: '' })
   })
 
   it.each(['only', 'locked'] as const)('部署启用 %s 时仍禁止切换类型', (restriction) => {

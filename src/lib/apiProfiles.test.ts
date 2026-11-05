@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  convertGalleryProfileToImages,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -25,6 +26,30 @@ import {
   validateApiProfile,
 } from './apiProfiles'
 import { CUSTOM_PROVIDER_LLM_PROMPT, DEFAULT_CUSTOM_PROVIDER_JSON } from './settingsCustomProvider'
+
+describe('gallery Images profile conversion', () => {
+  it('uses the image tool model, clears text selection, and leaves the source profile intact', () => {
+    const source = createDefaultOpenAIProfile({ apiMode: 'responses', model: 'text-a, text-b', selectedModel: 'text-b', imageGenerationModel: 'gpt-image-2.6-flare', reasoningEffort: 'high' })
+    expect(convertGalleryProfileToImages(source)).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.6-flare', selectedModel: undefined, reasoningEffort: undefined })
+    expect(source).toMatchObject({ apiMode: 'responses', model: 'text-a, text-b', selectedModel: 'text-b' })
+  })
+
+  it('preserves an empty tool model as a required choice after settings round-trip', () => {
+    const source = createDefaultOpenAIProfile({ apiMode: 'responses', model: 'text-model', imageGenerationModel: '' })
+    const converted = convertGalleryProfileToImages(source)
+    expect(converted.model).toBe('')
+    const settings = normalizeSettings({ profiles: [converted], agentProfiles: [source], agentTextProfileId: source.id })
+    expect(getActiveApiProfile(settings).model).toBe('')
+    expect(validateApiProfile({ ...getActiveApiProfile(settings), apiKey: 'fixture' })).toBe('缺少模型 ID')
+    expect(settings.agentProfiles[0]).toMatchObject({ model: 'text-model', apiMode: 'responses' })
+  })
+
+  it('keeps existing Images, Grok and other provider profiles unchanged', () => {
+    for (const profile of [createDefaultOpenAIProfile(), createDefaultOpenAIProfile({ provider: 'grok' }), createDefaultFalProfile()]) {
+      expect(convertGalleryProfileToImages(profile)).toBe(profile)
+    }
+  })
+})
 
 afterEach(() => {
   vi.unstubAllEnvs()
