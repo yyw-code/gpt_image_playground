@@ -6629,6 +6629,59 @@ describe('批量可靠性边界', () => {
     useStore.setState({ settings: normalizeSettings({ profiles: [profile], activeProfileId: profile.id }), tasks: [], showToast: vi.fn(), confirmDialog: null, setConfirmDialog: (dialog) => useStore.setState({ confirmDialog: dialog }) })
   })
 
+  it.each([false, true])('全失败任务只补选中的位置，兼容旧记录=%s', async (legacy) => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', error: '参数拒绝', apiProfileId: profile.id, apiModel: profile.model,
+      params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: [],
+      outputErrors: legacy ? undefined : [0, 1, 2].map((requestIndex) => ({ requestIndex, error: '参数拒绝' })) })
+    useStore.setState({ tasks: [source] })
+    vi.mocked(callImageApi).mockResolvedValueOnce({ images: ['data:image/png;base64,1024x1024'] })
+    await retryTask(source, 1)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    expect(vi.mocked(callImageApi).mock.calls[0][0].params.n).toBe(1)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    const result = useStore.getState().tasks[0]
+    expect(result.params.n).toBe(3)
+    expect(result.outputImages).toHaveLength(1)
+    expect(result.outputErrors?.map((item) => item.requestIndex)).toEqual([0, 2])
+  })
+
+  it('重试只确认选中位置的未知结果，保留其他未知位置且不重发成功图片', async () => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', error: '请求中断', apiProfileId: profile.id, apiModel: profile.model,
+      params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['saved'],
+      outputErrors: [{ requestIndex: 1, error: '未知' }, { requestIndex: 2, error: '未发送' }],
+      imageRequests: [{ state: 'saved', queuedAt: 1 }, { state: 'unknown', queuedAt: 1 }, { state: 'queued', queuedAt: 1 }] })
+    useStore.setState({ tasks: [source] })
+    await retryTask(source, 1)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().confirmDialog?.message).toContain('计费')
+    useStore.setState({ confirmDialog: null })
+    vi.mocked(callImageApi).mockResolvedValueOnce({ images: ['data:image/png;base64,1024x1024'] })
+    await retryTask(source, 2)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(useStore.getState().confirmDialog).toBeNull()
+    expect(vi.mocked(callImageApi).mock.calls[0][0].params.n).toBe(1)
+    expect(useStore.getState().tasks[0].outputImages[0]).toBe('saved')
+    expect(useStore.getState().tasks[0].outputErrors?.map((item) => item.requestIndex)).toEqual([1])
+    expect(useStore.getState().tasks[0].imageRequests?.[1].state).toBe('unknown')
+  })
+
+  it('重试旧任务的排队起点使用本轮时间，不把创建以来的时间计入排队', async () => {
+    const profile = useStore.getState().settings.profiles[0]
+    const source = task({ status: 'error', createdAt: 1, apiProfileId: profile.id, apiModel: profile.model, outputImages: [] })
+    useStore.setState({ tasks: [source] })
+    const beforeRetry = Date.now()
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => {
+      opts.onRequestState?.({ state: 'running', requestIndex: 0, position: 0 })
+      return { images: ['data:image/png;base64,1024x1024'] }
+    })
+    await retryTask(source)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(useStore.getState().tasks[0].imageRequests?.[0].queuedAt).toBeGreaterThanOrEqual(beforeRetry)
+    expect(useStore.getState().tasks[0].createdAt).toBe(1)
+  })
+
   it('无归属旧任务不能使用当前配置重试', async () => {
     const source = task({ status: 'error', apiProfileId: undefined })
     useStore.setState({ tasks: [source] })

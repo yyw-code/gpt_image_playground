@@ -18,14 +18,23 @@ vi.mock('../lib/imageCache', () => ({
   ensureImageCached: vi.fn(async () => 'data:image/png;base64,aW1hZ2U='),
 }))
 
+vi.mock('../lib/downloadImages', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../lib/downloadImages')>(),
+  downloadImageIds: vi.fn(async () => ({ successCount: 1, failCount: 0 })),
+  downloadImageEntriesAsZip: vi.fn(async () => ({ successCount: 2, failCount: 0 })),
+}))
+
 import DetailModal from './DetailModal'
 import { retryTask } from '../store'
+import { downloadImageIds, downloadImageEntriesAsZip, getImageZipEntries } from '../lib/downloadImages'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let root: ReturnType<typeof createRoot> | null = null
 let task: TaskRecord
 
 beforeEach(() => {
+  vi.mocked(downloadImageIds).mockClear()
+  vi.mocked(downloadImageEntriesAsZip).mockClear()
   vi.mocked(retryTask).mockClear()
   task = {
     id: 'task', prompt: 'Draw a cat.', params: { ...DEFAULT_PARAMS, size: '1440x2560' },
@@ -65,14 +74,14 @@ function loadImage(image: HTMLImageElement, width: number, height: number) {
 }
 
 describe('详情原图尺寸与比例', () => {
-  it.each(['done', 'running'] as const)('部分失败 %s 保留原图，按原槽位重试且运行时禁用重复提交', async (status) => {
+  it.each(['done', 'running', 'error'] as const)('部分失败 %s 保留原图，按原槽位重试且运行时禁用重复提交', async (status) => {
     task.params.n = 3
     task.outputErrors = [{ requestIndex: 1, error: 'busy' }, { requestIndex: 2, error: 'busy' }]
     task.status = status
     task.generationProgress = status === 'running' ? { state: 'queued', requestIndex: 1, queuePosition: 2 } : undefined
     const { container } = await renderDetail()
     if (status === 'running') expect(container.textContent).toContain('第 2 张排队中')
-    const retryAll = [...container.querySelectorAll('button')].find((button) => button.textContent === '重试失败的 2 张')!
+    const retryAll = [...container.querySelectorAll('button')].find((button) => button.textContent === '补齐未完成的 2 张')!
     expect(retryAll.disabled).toBe(status === 'running')
     act(() => retryAll.click())
     expect(retryTask).toHaveBeenCalledTimes(status === 'running' ? 0 : 1)
@@ -84,6 +93,50 @@ describe('详情原图尺寸与比例', () => {
     act(() => retryOne.click())
     if (status === 'running') expect(retryTask).not.toHaveBeenCalled()
     else expect(retryTask).toHaveBeenCalledExactlyOnceWith(task, 1)
+  })
+
+  it.each([false, true])('中断后 2/10 图片可单张下载和下载全部成功图片，ZIP=%s', async (zip) => {
+    task.status = 'error'
+    task.error = '请求中断'
+    task.params.n = 10
+    task.outputImages = ['output', 'second']
+    task.outputErrors = Array.from({ length: 8 }, (_, index) => ({ requestIndex: index + 2, error: '尚未完成' }))
+    task.imageRequests = Array.from({ length: 10 }, (_, index) => ({ state: index < 2 ? 'saved' : index === 2 ? 'unknown' : 'queued', queuedAt: 1 }))
+    mocks.state.settings = { ...DEFAULT_SETTINGS, zipDownloadRoutes: zip ? ['task-detail-all'] : [] }
+    const { container } = await renderDetail()
+    expect(container.textContent).toContain('已成功 2/10 张 · 未完成 8 张')
+    expect(container.querySelectorAll('[aria-label="逐张生成结果"] button[aria-pressed]')).toHaveLength(10)
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="下载图片"]')!.click())
+    expect(downloadImageIds).toHaveBeenCalledWith(['output'], 'task-task')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="第 3 张：结果未知"]')!.click())
+    expect(container.textContent).toContain('第 3 张结果未知')
+    expect(container.querySelector('[aria-label="下载图片"]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="下载全部成功图片"]')!.click())
+    if (zip) expect(downloadImageEntriesAsZip).toHaveBeenCalledWith(getImageZipEntries(['output', 'second'], 'task-task'), 'task-task')
+    else expect(downloadImageIds).toHaveBeenLastCalledWith(['output', 'second'], 'task-task')
+    vi.mocked(downloadImageEntriesAsZip).mockClear()
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '打包下载成功图片（ZIP）')!.click())
+    expect(downloadImageEntriesAsZip).toHaveBeenCalledExactlyOnceWith(getImageZipEntries(['output', 'second'], 'task-task'), 'task-task')
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="第 4 张：未发送"]')!.click())
+    expect(container.textContent).toContain('第 4 张未发送')
+    act(() => [...container.querySelectorAll('button')].find((button) => button.textContent === '重试这张')!.click())
+    expect(retryTask).toHaveBeenCalledWith(task, 3)
+  })
+
+  it('旧全失败记录也展示所有位置并允许选择一张重试', async () => {
+    task.status = 'error'
+    task.error = '请求拒绝'
+    task.params.n = 3
+    task.outputImages = []
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<DetailModal />))
+    expect(container.querySelectorAll('[aria-label="逐张生成结果"] button[aria-pressed]')).toHaveLength(3)
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="第 2 张：生成失败"]')!.click())
+    act(() => [...container.querySelectorAll('button')].find((button) => button.textContent === '重试这张')!.click())
+    expect(retryTask).toHaveBeenCalledWith(task, 1)
+    expect(container.querySelector('[aria-label="下载全部成功图片"]')).toBeNull()
   })
 
   it.each([false, true])('同一多图任务可切换查看全部结果，部分失败=%s', async (partialFailure) => {

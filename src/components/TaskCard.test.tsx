@@ -40,7 +40,9 @@ describe('批量任务卡恢复', () => {
 
   it('中断任务保留成功封面，并明确只补缺失的图片', async () => {
     const container = await renderTask({ status: 'error', error: '请求中断', outputImages: ['saved'], outputErrors: [{ requestIndex: 1, error: 'pending' }, { requestIndex: 2, error: 'pending' }] })
+    expect(container.textContent).toContain('部分成功')
+    expect(container.textContent).toContain('已成功 1/3')
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,test')
-    expect(container.querySelector('[aria-label="重试失败的 2 张"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="补齐未完成的 2 张"]')).not.toBeNull()
   })
 })

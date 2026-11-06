@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { TaskRecord } from '../types'
+import { getTaskOutputSlots } from '../lib/taskOutputRetry'
 import { useStore, retryTask } from '../store'
 import { ensureImageThumbnailCached, subscribeImageThumbnail } from '../lib/imageCache'
 import { useNearViewport } from '../hooks/useNearViewport'
@@ -328,7 +329,7 @@ export default function TaskCard({
   const isAgentTask = task.sourceMode === 'agent' || Boolean(task.agentConversationId || task.agentRoundId)
   const showPendingPrompt = isAgentTaskPromptPending(task)
   const showN = !isAgentTask && (task.params.n > 1 || nDisplay.isMismatch)
-  const outputErrorCount = task.outputErrors?.length ?? 0
+  const outputErrorCount = getTaskOutputSlots(task).filter((slot) => !slot.imageId).length
   const outputSuccessCount = task.outputImages?.length ?? 0
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status !== 'running' && outputSuccessCount > 0 && outputErrorCount > 0
@@ -488,7 +489,7 @@ export default function TaskCard({
                 />
               </svg>
               <span className={`text-xs text-center leading-tight ${isInterrupted ? 'text-yellow-500' : 'text-red-400'}`}>
-                {isInterrupted ? '已停止' : '失败'}
+                {hasPartialOutputFailure ? '部分成功' : isInterrupted ? '已停止' : '失败'}
               </span>
             </div>
           )}
@@ -650,11 +651,13 @@ export default function TaskCard({
                 </span>
               )}
             </div>
-            {task.imageRequests && <div className="text-xs text-gray-500" title="已保存表示最终图片与任务记录已写入本地；请求中断的结果不会自动重发">
-              已保存 {task.imageRequests.filter((item) => item.state === 'saved').length}/{task.params.n}
-              {task.status === 'running' && ` · 进行中 ${task.imageRequests.filter((item) => item.state === 'running' || item.state === 'saving').length} · 待发送 ${task.imageRequests.filter((item) => item.state === 'queued').length}`}
-              {task.imageRequests.some((item) => item.state === 'failed') && ` · 失败 ${task.imageRequests.filter((item) => item.state === 'failed').length}`}
-              {task.imageRequests.some((item) => item.state === 'unknown') && ' · 有结果待确认'}
+            {(task.imageRequests || outputErrorCount > 0) && <div className="text-xs text-gray-500" title="已保存表示最终图片与任务记录已写入本地；请求中断的结果不会自动重发">
+              {hasPartialOutputFailure && '部分成功 · '}已成功 {outputSuccessCount}/{requestedOutputCount}
+              {outputErrorCount > 0 && ` · 未完成 ${outputErrorCount} 张`}
+              {task.status === 'running' && task.imageRequests && ` · 进行中 ${task.imageRequests.filter((item) => item.state === 'running' || item.state === 'saving').length}`}
+              {task.imageRequests?.some((item) => item.state === 'queued') && ` · 未发送 ${task.imageRequests.filter((item) => item.state === 'queued').length}`}
+              {task.imageRequests?.some((item) => item.state === 'failed') && ` · 失败 ${task.imageRequests.filter((item) => item.state === 'failed').length}`}
+              {task.imageRequests?.some((item) => item.state === 'unknown') && ' · 有结果待确认'}
             </div>}
             {/* 操作按钮 */}
             <div
@@ -666,9 +669,9 @@ export default function TaskCard({
               onTouchEnd={(e) => e.stopPropagation()}
               onTouchCancel={(e) => e.stopPropagation()}
             >
-              {((task.status === 'error' && !isFalReconnecting && !isCustomReconnecting) || (task.status === 'done' && (hasPartialOutputFailure || settings.alwaysShowRetryButton))) && (
+              {((task.status === 'error' && !isFalReconnecting && !isCustomReconnecting) || (task.status === 'done' && (outputErrorCount > 0 || settings.alwaysShowRetryButton))) && (
                 <TaskActionButton
-                  tooltip={hasPartialOutputFailure ? `重试失败的 ${outputErrorCount} 张` : task.status === 'done' ? '再生成一组' : '重试任务'}
+                  tooltip={outputErrorCount > 0 ? `补齐未完成的 ${outputErrorCount} 张` : task.status === 'done' ? '再生成一组' : '重试任务'}
                   onClick={() => retryTask(task)}
                   className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
                 >

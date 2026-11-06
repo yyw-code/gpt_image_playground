@@ -62,7 +62,7 @@ import { orderInputImagesForMask } from './lib/mask'
 import { getImageSubmissionError, getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { getGrokImageInputError } from './lib/grokImage'
 import { runWithConcurrency, splitBatchPrompts } from './lib/batchPrompts'
-import { mergeRetriedTaskOutputs } from './lib/taskOutputRetry'
+import { getTaskOutputSlots, mergeRetriedTaskOutputs } from './lib/taskOutputRetry'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteImageCacheEntry, ensureImageCached, scheduleMissingThumbnailBackfill } from './lib/imageCache'
@@ -3828,7 +3828,7 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
             await deleteUnreferencedImageIds([...stored.outputIds, ...(stored.transparentOriginalImageIds ?? [])])
             return
           }
-          const requests = latest.imageRequests ?? Array.from({ length: task.params.n }, () => ({ state: 'queued' as const, queuedAt: task.createdAt }))
+          const requests = latest.imageRequests ?? Array.from({ length: task.params.n }, () => ({ state: 'queued' as const, queuedAt: task.startedAt ?? task.createdAt }))
           const base = incrementalResults || retryIndices ? latest : {
             ...latest, outputImages: [], outputErrors: Array.from({ length: task.params.n }, (_, index) => ({ requestIndex: index, error: '尚未完成；中断后请确认结果再补图' })),
           }
@@ -3860,7 +3860,7 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
         const latest = useStore.getState().tasks.find((item) => item.id === taskId)
         if (!latest || latest.status !== 'running') return
         const slotIndex = retryIndices?.[event.requestIndex] ?? event.requestIndex
-        const requests = latest.imageRequests ?? Array.from({ length: task.params.n }, () => ({ state: 'queued' as const, queuedAt: task.createdAt }))
+        const requests = latest.imageRequests ?? Array.from({ length: task.params.n }, () => ({ state: 'queued' as const, queuedAt: task.startedAt ?? task.createdAt }))
         if (event.state !== 'finished') void updateTaskInStore(taskId, { imageRequests: requests.map((item, index) => index === slotIndex ? { ...item, state: event.state === 'running' ? 'running' : 'queued', ...(event.state === 'running' ? { startedAt: Date.now() } : {}) } : item) })
         if (event.state === 'finished') {
           updateTaskInStore(taskId, { generationProgress: undefined })
@@ -4185,13 +4185,17 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 画廊失败原地重试；部分失败只补选中或全部失败位置，成功任务另建一组，Agent 保持原规则。 */
+/** 画廊按原编号补选中或全部缺失图片（含全失败旧记录）；保留成功图片和原配置，未知结果先确认。 */
 export async function retryTask(task: TaskRecord, requestIndex?: number, confirmUnknown = false) {
   const { settings, tasks } = useStore.getState()
-  const source = tasks.find((item) => item.id === task.id)
-  if (!source || source.status === 'running' || source.falRecoverable || source.customRecoverable) return
-  const retryIndices = !isAgentTask(source) && source.outputImages.length && source.outputErrors?.length
-    ? source.outputErrors.filter((item) => requestIndex === undefined || item.requestIndex === requestIndex).map((item) => item.requestIndex).sort((a, b) => a - b)
+  const storedSource = tasks.find((item) => item.id === task.id)
+  if (!storedSource || storedSource.status === 'running' || storedSource.falRecoverable || storedSource.customRecoverable) return
+  // 旧中断记录可能没有逐图错误；选定补图前补齐槽位映射，避免把单张结果当成整批结果。
+  const missingSlots = getTaskOutputSlots(storedSource).filter((slot) => !slot.imageId)
+  const useSlots = !isAgentTask(storedSource) && missingSlots.length > 0 && (requestIndex !== undefined || storedSource.outputImages.length > 0 || Boolean(storedSource.outputErrors?.length))
+  const source = useSlots ? { ...storedSource, outputErrors: missingSlots.map((slot) => ({ requestIndex: slot.requestIndex, error: slot.error })) } : storedSource
+  const retryIndices = useSlots
+    ? missingSlots.filter((slot) => requestIndex === undefined || slot.requestIndex === requestIndex).map((slot) => slot.requestIndex)
     : undefined
   if (requestIndex !== undefined && !retryIndices?.length) return
   if (!confirmUnknown && source.imageRequests?.some((item, index) => item.state === 'unknown' && (retryIndices ? retryIndices.includes(index) : requestIndex === undefined || index === requestIndex))) {
@@ -4253,7 +4257,9 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
     actualParamsByImage: retryIndices ? source.actualParamsByImage : undefined,
     revisedPromptByImage: retryIndices ? source.revisedPromptByImage : undefined,
     rawImageUrls: retryIndices ? source.rawImageUrls : undefined,
-    imageRequests: retryIndices ? source.imageRequests?.map((item, index) => retryIndices.includes(index) ? { state: 'queued' as const, queuedAt: startedAt } : item) : undefined,
+    imageRequests: retryIndices ? getTaskOutputSlots(source).map((slot) => retryIndices.includes(slot.requestIndex)
+      ? { state: 'queued' as const, queuedAt: startedAt }
+      : source.imageRequests?.[slot.requestIndex] ?? { state: slot.imageId ? 'saved' as const : source.error === '请求中断' ? 'unknown' as const : 'failed' as const, queuedAt: source.startedAt ?? source.createdAt }) : undefined,
     generationProgress: undefined,
     rawResponsePayload: undefined,
     streamPartialImageIds: undefined,

@@ -1,16 +1,33 @@
 import type { TaskRecord } from '../types'
 
-/** 将已保存成功图片和明确失败编号还原为有序位置，兼容没有失败信息的旧记录。 */
-export function getTaskOutputSlots(task: Pick<TaskRecord, 'params' | 'outputImages' | 'outputErrors'>) {
+type OutputTask = Pick<TaskRecord, 'params' | 'outputImages' | 'outputErrors'> & Partial<Pick<TaskRecord, 'status' | 'error' | 'imageRequests'>>
+
+/** 按原编号还原图片位置；中断旧记录缺少逐图错误时补齐空位，不把整批错误覆盖到成功图片。 */
+export function getTaskOutputSlots(task: OutputTask) {
   const errors = new Map(task.outputErrors?.map((item) => [item.requestIndex, item.error]))
-  const count = errors.size ? Math.max(task.params.n, task.outputImages.length + errors.size) : task.outputImages.length
+  const count = errors.size || task.status === 'error' || task.imageRequests?.length
+    ? Math.max(task.params.n, task.outputImages.length + errors.size)
+    : task.outputImages.length
   let outputImageIndex = 0
   return Array.from({ length: count }, (_, requestIndex) => {
     const error = errors.get(requestIndex) ?? ''
     if (error) return { requestIndex, outputImageIndex: -1, imageId: '', error }
     const imageId = task.outputImages[outputImageIndex] ?? ''
-    return { requestIndex, outputImageIndex: outputImageIndex++, imageId, error: '' }
+    return { requestIndex, outputImageIndex: imageId ? outputImageIndex++ : -1, imageId, error: imageId ? '' : task.error || '尚未完成' }
   })
+}
+
+/** 优先根据已保存图片和逐图请求状态展示结果，避免把未发送、未知结果统称失败。 */
+export function getTaskOutputSlotLabel(task: OutputTask, slot: ReturnType<typeof getTaskOutputSlots>[number]) {
+  if (slot.imageId) return '已成功'
+  const state = task.imageRequests?.[slot.requestIndex]?.state
+  if (state === 'unknown') return '结果未知'
+  if (state === 'queued') return '未发送'
+  if (state === 'running') return task.status === 'running' ? '生成中' : '结果未知'
+  if (state === 'saving') return task.status === 'running' ? '保存中' : '结果未知'
+  if (state === 'failed') return '生成失败'
+  if (task.error === '请求中断') return '未完成'
+  return slot.error ? '生成失败' : '未完成'
 }
 
 /** 将补图结果写回原失败位置，保留其他图片、原图与逐图参数；缺图继续作为失败展示。 */
