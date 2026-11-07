@@ -1,4 +1,4 @@
-import type { ApiProfile, TaskParams } from '../types'
+import type { ApiProfile, TaskParams, TaskRecord } from '../types'
 import { normalizeModelImageSize, type ImageSizeMode } from './size'
 
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2.5-sunburst'
@@ -45,6 +45,13 @@ export function getImageParameterCapabilities(profile: ApiProfile): ImageParamet
     return { sizeMode: 'auto', qualities: ['auto'], nativeOutput: false }
   }
   return { sizeMode: 'custom', qualities: isGptImage25Model(model) ? [...standardQuality, 'xhigh', 'max'] : standardQuality, nativeOutput: true }
+}
+
+/** 记录任务使用的参数模式，供历史结果核对；Grok 沿用独立原生参数规则，未知通道不声称发送了参数。 */
+export function getImageParameterMode(profile: ApiProfile): NonNullable<TaskRecord['imageParameterMode']> {
+  const capabilities = getImageParameterCapabilities(profile)
+  if (capabilities.sizeMode === 'composition') return 'composition'
+  return capabilities.nativeOutput || profile.provider === 'grok' ? 'native' : 'default'
 }
 
 /** 只组装当前通道支持的原生字段；画廊和 Agent 发送前复用，防止隐藏参数残留。 */

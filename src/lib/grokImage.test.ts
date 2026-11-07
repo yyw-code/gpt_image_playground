@@ -248,7 +248,7 @@ describe('Grok image integration', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it.each([1, 2, 10])('dispatches %s single-image requests with concurrency capped at two', async (n) => {
+  it.each([1, 2, 4, 5, 10])('dispatches %s single-image requests with concurrency capped at ten', async (n) => {
     let active = 0
     let maxActive = 0
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
@@ -260,7 +260,7 @@ describe('Grok image integration', () => {
     })
     const result = await callImageApi({ settings: settings(), prompt: 'cat', params: { ...DEFAULT_PARAMS, n }, inputImageDataUrls: [] })
     expect(fetchMock).toHaveBeenCalledTimes(n)
-    expect(maxActive).toBe(Math.min(n, 2))
+    expect(maxActive).toBe(Math.min(n, 10))
     expect(result.images).toHaveLength(n)
     expect(fetchMock.mock.calls.every(([, init]) => JSON.parse(String(init?.body)).n === 1)).toBe(true)
   })

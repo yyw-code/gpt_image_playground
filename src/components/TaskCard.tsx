@@ -5,7 +5,7 @@ import { useStore, retryTask } from '../store'
 import { ensureImageThumbnailCached, subscribeImageThumbnail } from '../lib/imageCache'
 import { useNearViewport } from '../hooks/useNearViewport'
 import { formatImageRatio } from '../lib/size'
-import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
+import { getParamDisplay, ActualValueBadge, getImageParameterCheck, getTaskImageActualParams } from '../lib/paramDisplay'
 import { DEFAULT_FAL_MODEL, DEFAULT_IMAGES_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { getTaskPromptText } from '../lib/promptImageMentions'
@@ -62,7 +62,7 @@ function TaskActionButton({
   )
 }
 
-/** 展示任务结果和图片队列进度；失败补图保留成功封面，并区分重试与再生成入口。 */
+/** 展示队列进度、逐图参数差异与成功封面；参数不符不影响下载，也不触发失败补图。 */
 export default function TaskCard({
   task,
   onReuse,
@@ -331,6 +331,9 @@ export default function TaskCard({
   const showN = !isAgentTask && (task.params.n > 1 || nDisplay.isMismatch)
   const outputErrorCount = getTaskOutputSlots(task).filter((slot) => !slot.imageId).length
   const outputSuccessCount = task.outputImages?.length ?? 0
+  const parameterChecks = task.outputImages.map((imageId) => getImageParameterCheck(task, getTaskImageActualParams(task, imageId)))
+  const parameterMismatchCount = parameterChecks.filter((check) => check.mismatches.length).length
+  const parameterUnverifiedCount = parameterChecks.filter((check) => check.unverified.length).length
   const requestedOutputCount = Math.max(task.params.n, outputSuccessCount + outputErrorCount)
   const hasPartialOutputFailure = task.status !== 'running' && outputSuccessCount > 0 && outputErrorCount > 0
 
@@ -659,6 +662,13 @@ export default function TaskCard({
               {task.imageRequests?.some((item) => item.state === 'failed') && ` · 失败 ${task.imageRequests.filter((item) => item.state === 'failed').length}`}
               {task.imageRequests?.some((item) => item.state === 'unknown') && ' · 有结果待确认'}
             </div>}
+            {parameterChecks.length > 0 && (parameterMismatchCount > 0 || parameterUnverifiedCount > 0) && (
+              <div className={`text-xs ${parameterMismatchCount ? 'text-amber-700 dark:text-amber-300' : 'text-gray-500'}`} title="按每张图片核对任务设置；质量仅核对接口回显，未知值不算符合，不自动重试。">
+                {parameterMismatchCount > 0 && `参数与设置不符 ${parameterMismatchCount} 张`}
+                {parameterMismatchCount > 0 && parameterUnverifiedCount > 0 && ' · '}
+                {parameterUnverifiedCount > 0 && `部分参数未验证 ${parameterUnverifiedCount} 张`}
+              </div>
+            )}
             {/* 操作按钮 */}
             <div
               data-tag-scroll-area

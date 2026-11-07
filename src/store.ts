@@ -55,6 +55,7 @@ import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInpu
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
+import { getImageParameterMode } from './lib/imageModels'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -1714,7 +1715,7 @@ export async function initStore() {
   }
 }
 
-/** 校验图片能力并快照请求配置归属后提交任务，批量执行不受后续页面选择影响。 */
+/** 校验图片能力并快照配置归属及参数模式后提交任务，批量执行不受后续页面选择影响。 */
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}, submissionState = useStore.getState()) {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileScope, reusedTaskApiProfileName, reusedTaskApiProfileMissing, reusedTaskApiModel, showToast, setConfirmDialog } =
     submissionState
@@ -1832,6 +1833,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     useStore.getState().setParams(normalizedParamPatch)
   }
 
+  /** 保存每张任务的配置和参数模式后提交；不把当前页面配置用于解释后来的历史结果。 */
   const startTask = async (taskPrompt: string) => {
     const transparentMeta = taskParams.transparent_output && activeProfile.transparentBackgroundMethod === 'local'
       ? createTransparentOutputMeta(taskPrompt)
@@ -1846,6 +1848,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       apiProfileName: activeProfile.name,
       apiMode: activeProfile.apiMode,
       apiModel: activeProfile.model,
+      imageParameterMode: getImageParameterMode(activeProfile),
       inputImageIds: orderedInputImages.map((i) => i.id),
       maskTargetImageId,
       maskImageId,
@@ -2752,7 +2755,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   void executeAgentRound(conversationId, newRoundId, normalizedParams, requestSettings, activeProfile, imageProfile)
 }
 
-/** 执行 Agent 轮次与图片工具；删除卡片仅取消其等待请求，停止或清空轮次则中止整轮。 */
+/** 执行 Agent 轮次并记录图片参数模式；删除卡片仅取消其等待请求，停止或清空轮次则中止整轮。 */
 async function executeAgentRound(
   conversationId: string,
   roundId: string,
@@ -2828,7 +2831,7 @@ async function executeAgentRound(
       }))
     }
 
-    /** 创建或复用图片卡片；轮次已停止或清空时禁止在异步恢复后重新创建记录。 */
+    /** 创建或复用图片卡片并记录图片参数模式；轮次停止后禁止在异步恢复时重新创建记录。 */
     const ensureStreamingAgentTask = async (
       toolCallId: string,
       taskPrompt = '',
@@ -2857,6 +2860,7 @@ async function executeAgentRound(
         apiProfileName: imageProfile.name,
         apiMode: imageProfile.apiMode,
         apiModel: imageProfile.model,
+        imageParameterMode: getImageParameterMode(imageProfile),
         inputImageIds,
         maskTargetImageId: options.maskTargetImageId !== undefined ? options.maskTargetImageId : round.maskTargetImageId ?? null,
         maskImageId: options.maskImageId !== undefined ? options.maskImageId : round.maskImageId ?? null,
@@ -3455,6 +3459,7 @@ async function executeAgentRound(
           apiProfileName: imageProfile.name,
           apiMode: imageProfile.apiMode,
           apiModel: imageProfile.model,
+          imageParameterMode: getImageParameterMode(imageProfile),
           inputImageIds: uniqueIds([...(round?.inputImageIds ?? []), ...promptRefs.imageIds]),
           maskTargetImageId: round?.maskTargetImageId ?? null,
           maskImageId: round?.maskImageId ?? null,
@@ -3735,7 +3740,7 @@ async function executeAgentRound(
   }
 }
 
-/** 执行画廊任务并清理本地提示词尾注用于改写比较；执行失效后忽略结果并阻止后续请求。 */
+/** 执行画廊任务，仅清理兼容模式实际注入的提示词尾注；执行失效后忽略结果并阻止后续请求。 */
 async function executeTask(taskId: string, retryIndices?: number[]) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -3942,7 +3947,8 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
     const actualParams = deriveGalleryActualParams(taskProvider, isAsyncCustomTask, result.actualParams, actualParamsList, outputIds.length)
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    const revisedPrompts = activeProfile.codexCli || IS_SITE_MODE && taskProvider === 'openai'
+    // 只有兼容模式实际注入了构图尾注；原生模式不得剥除上游新增的文字。
+    const revisedPrompts = activeProfile.codexCli
       ? result.revisedPrompts?.map((prompt) => {
           if (prompt == null) return prompt
           const withoutAspect = stripInjectedImageAspectRatioPrompt(prompt, requestPrompt, task.params.size)
@@ -4185,7 +4191,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 画廊按原编号补选中或全部缺失图片（含全失败旧记录）；保留成功图片和原配置，未知结果先确认。 */
+/** 按原编号补缺图并保留成功结果及参数基准；Grok 旧记录仅在请求时补默认几何参数，真实变更仍拒绝，未知结果先确认。 */
 export async function retryTask(task: TaskRecord, requestIndex?: number, confirmUnknown = false) {
   const { settings, tasks } = useStore.getState()
   const storedSource = tasks.find((item) => item.id === task.id)
@@ -4212,6 +4218,13 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
     useStore.getState().showToast('原任务的配置已不存在或原模型无法确认，请恢复原配置，或明确复用参数创建新任务。', 'error')
     return
   }
+  const preservesOutputs = Boolean(retryIndices?.length && source.outputImages.length)
+  const imageParameterMode = getImageParameterMode(activeProfile)
+  if (preservesOutputs && (source.imageParameterMode && source.imageParameterMode !== imageParameterMode
+    || source.apiProvider && source.apiProvider !== activeProfile.provider)) {
+    useStore.getState().showToast('当前配置的参数模式或服务商已改变，请恢复原配置后补图，或复用参数创建新任务；已有图片保持不变。', 'error')
+    return
+  }
   const grokInputError = getGrokImageInputError(activeProfile, source.inputImageIds.length, Boolean(source.maskImageId))
   if (grokInputError) {
     useStore.getState().showToast(grokInputError, 'error')
@@ -4228,6 +4241,17 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
   const taskParams = shouldUseTransparentOutput
     ? getTransparentRequestParams(normalizedParams)
     : { ...normalizedParams, transparent_output: false }
+  // 同一任务共用参数快照，不能因补一个槽位而改写已完成图片的核对基准。
+  const changedParams = getChangedParams(source.params, taskParams)
+  if (activeProfile.provider === 'grok') {
+    // 只豁免已知的缺省值补齐；显式值被修改或其他字段变化仍须拦截。
+    if (source.params.resolution === undefined && changedParams.resolution === '1k') delete changedParams.resolution
+    if (source.params.aspect_ratio === undefined && changedParams.aspect_ratio === '1:1') delete changedParams.aspect_ratio
+  }
+  if (preservesOutputs && Object.keys(changedParams).length) {
+    useStore.getState().showToast('当前配置会改变原任务参数，请恢复原配置后补图，或复用参数创建新任务；已有图片保持不变。', 'error')
+    return
+  }
   const transparentMeta = taskParams.transparent_output && activeProfile.transparentBackgroundMethod === 'local'
     ? createTransparentOutputMeta(source.prompt.trim())
     : null
@@ -4238,13 +4262,16 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
     ...(overwrite ? source : {}),
     id: taskId,
     prompt: source.prompt,
-    params: taskParams,
+    // 保留旧图的原始核对基准；callImageApi 会为补图请求单独规范化缺省参数。
+    params: preservesOutputs ? source.params : taskParams,
     apiProvider: activeProfile.provider,
     apiProfileId: activeProfile.id,
     apiConfigScope: source.apiProfileId ? getTaskApiConfigScope(source) : 'gallery',
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
     apiModel: activeProfile.model,
+    // 历史缺少模式时继续保留未知，不能用本次补图模式追认此前结果。
+    imageParameterMode: preservesOutputs ? source.imageParameterMode : imageParameterMode,
     inputImageIds: [...source.inputImageIds],
     maskTargetImageId: source.maskTargetImageId ?? null,
     maskImageId: source.maskImageId ?? null,

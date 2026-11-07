@@ -21,7 +21,7 @@ interface AgentProfileEditorProps {
 
 const FIELD_CLASS = 'w-full rounded-xl border border-transparent bg-black/[0.04] px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-300 disabled:opacity-60 dark:bg-white/[0.06] dark:text-gray-200'
 
-/** 列表管理 Agent 配置，弹窗以 ChatGPT/Grok 展示生图类型并支持按名称选择本站密钥，显式启用才切换当前使用项。 */
+/** 管理 Agent 独立配置，说明兼容构图与原生参数边界；显式启用才切换当前项，不联动画廊。 */
 export default function AgentProfileEditor({ draft, role, onChange, onCommit, onDelete }: AgentProfileEditorProps) {
   const [showKey, setShowKey] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -184,6 +184,7 @@ export default function AgentProfileEditor({ draft, role, onChange, onCommit, on
             <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(profile.streamImages)} disabled={locked} onChange={(event) => patchProfile({ streamImages: event.target.checked }, true)} />流式图片输出</label>
             {profile.streamImages && <label className="block space-y-1">中间预览图数量<input type="number" min={0} max={3} value={profile.streamPartialImages ?? 1} disabled={locked} onChange={(event) => patchProfile({ streamPartialImages: Number(event.target.value) }, true)} className={FIELD_CLASS} /></label>}
             <label className="flex items-center gap-2"><input type="checkbox" checked={profile.codexCli} disabled={locked} onChange={(event) => patchProfile({ codexCli: event.target.checked }, true)} />Codex CLI 兼容模式</label>
+            <p className="text-xs text-gray-500">开启后仅用提示词引导构图，不发送精确尺寸、质量和格式；关闭后按模型能力发送原生参数，不自动拼接比例。上游可能调整质量和格式，请核对生成结果。</p>
             <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(profile.responseFormatB64Json)} disabled={locked} onChange={(event) => patchProfile({ responseFormatB64Json: event.target.checked }, true)} />请求 Base64 图片响应</label>
             {!IS_SITE_MODE && isApiProxyAvailable() && <label className="flex items-center gap-2"><input type="checkbox" checked={profile.apiProxy || isApiProxyLocked()} disabled={locked || isApiProxyLocked()} onChange={(event) => patchProfile({ apiProxy: event.target.checked }, true)} />使用 API 代理</label>}
             <label className="block space-y-1">透明背景处理<Select value={profile.transparentBackgroundMethod} disabled={locked} options={[{ label: '接口原生', value: 'api' }, { label: '本地处理', value: 'local' }]} onChange={(value) => patchProfile({ transparentBackgroundMethod: value as ApiProfile['transparentBackgroundMethod'] }, true)} className={FIELD_CLASS} /></label>

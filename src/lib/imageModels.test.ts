@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile } from './apiProfiles'
-import { getImageParameterCapabilities, getImageRequestParameters } from './imageModels'
+import { getImageParameterCapabilities, getImageRequestParameters, getImageParameterMode } from './imageModels'
 
 describe('image parameter capabilities', () => {
+  it('snapshots native, composition and unknown channel modes independently of future profile changes', () => {
+    const profile = createDefaultOpenAIProfile({ codexCli: false })
+    expect(getImageParameterMode(profile)).toBe('native')
+    expect(getImageParameterMode({ ...profile, codexCli: true })).toBe('composition')
+    expect(getImageParameterMode({ ...profile, model: 'unknown-image' })).toBe('default')
+    expect(getImageParameterMode({ ...profile, provider: 'grok' })).toBe('native')
+  })
   it.each([
     ['gpt-image-1.5', 'fixed', false],
     ['gpt-image-1.5-2025-12-16', 'fixed', false],

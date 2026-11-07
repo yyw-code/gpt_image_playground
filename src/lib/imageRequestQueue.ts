@@ -1,5 +1,5 @@
 interface QueueOptions {
-  /** 同页 Grok 共享两个槽位；OpenAI/Agent 仍共享一个槽位。 */
+  /** 同页 Grok 与 OpenAI/Agent 分别共享十个槽位，后端仍可施加统一限流。 */
   lane?: 'openai' | 'grok'
   signal?: AbortSignal
   isCancelled?: () => boolean
@@ -14,6 +14,8 @@ interface QueueEntry {
 
 const waiting: QueueEntry[] = []
 const active = { openai: 0, grok: 0 }
+// 每条供应商队列的页面并发上限，跨任务共用，不能绕过服务端配额。
+const IMAGE_REQUEST_CONCURRENCY = 10
 
 /** 更新等待位置并启动最早的有效请求；同页按供应商共享有界执行槽位。 */
 function drainImageQueue() {
@@ -23,7 +25,7 @@ function drainImageQueue() {
   waiting.forEach((entry, index) => entry.options.onState?.('queued', index + 1))
   const index = waiting.findIndex((entry) => {
     const lane = entry.options.lane ?? 'openai'
-    return active[lane] < (lane === 'grok' ? 2 : 1)
+    return active[lane] < IMAGE_REQUEST_CONCURRENCY
   })
   if (index < 0) return
   const [next] = waiting.splice(index, 1)

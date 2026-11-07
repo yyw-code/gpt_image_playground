@@ -7,7 +7,9 @@ import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { formatImageRatio, getImageAspectRatioWarning } from '../lib/size'
-import { ActualValueBadge, DetailParamValue } from '../lib/paramDisplay'
+import { ActualValueBadge, DetailParamValue, getTaskImageActualParams } from '../lib/paramDisplay'
+import { getBase64ImageFormat } from '../lib/imageApiShared'
+import ImageParameterNotice from './ImageParameterNotice'
 import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
@@ -20,7 +22,7 @@ import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashI
 import ViewportTooltip from './ViewportTooltip'
 import { CommentBadge } from './CommentMarks'
 
-/** 展示成功原图、逐图状态、下载与单张补图，不因整批中断隐藏已保存结果；补图保留原配置，接口等待含传输时间，不冒充纯模型耗时。 */
+/** 展示成功原图、逐图参数核对、下载与单张补图；参数差异不丢弃结果，接口等待含传输时间。 */
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
@@ -225,12 +227,15 @@ export default function DetailModal() {
   const currentImageRatio = currentOutputImageId ? imageRatios[currentOutputImageId] : ''
   const currentImageSize = currentOutputImageId ? imageSizes[currentOutputImageId] ?? '' : ''
   const baseActualParams = currentOutputImageId
-    ? task.actualParamsByImage?.[currentOutputImageId] ?? task.actualParams
+    ? getTaskImageActualParams(task, currentOutputImageId)
     : task.actualParams
-  // 原图解码尺寸优先于接口回显，避免把回显的请求值误认为实际输出。
-  const currentActualParams = currentImageSize
-    ? { ...(baseActualParams ?? {}), size: currentImageSize.replace('×', 'x') }
-    : baseActualParams
+  const currentImageFormat = getBase64ImageFormat(currentOutputPreviewSrc)
+  // 原图解码尺寸和文件头优先于接口回显，避免把请求值或错误 MIME 当作实际输出。
+  const currentActualParams = {
+    ...baseActualParams,
+    ...(currentImageSize ? { size: currentImageSize.replace('×', 'x') } : {}),
+    ...(currentImageFormat ? { output_format: currentImageFormat } : {}),
+  }
   const aspectRatioWarning = task.apiProvider === 'grok' ? '' : getImageAspectRatioWarning(task.params.size, currentImageSize)
   const currentRevisedPrompt = currentOutputImageId ? task.revisedPromptByImage?.[currentOutputImageId]?.trim() : ''
   // 将 @图N 等 mention 标记和透明背景追加提示词都按实际请求内容比较，
@@ -982,12 +987,13 @@ export default function DetailModal() {
               </div>
             )}
             {!isAgentTask && missingOutputCount > 0 && <button type="button" disabled={task.status === 'running' || isFalReconnecting || isCustomReconnecting} onClick={handleRetry} className="mb-4 rounded-full bg-blue-500 px-3 py-1.5 text-xs text-white disabled:opacity-40 disabled:cursor-not-allowed">补齐未完成的 {missingOutputCount} 张</button>}
+            {currentOutputImageId && <ImageParameterNotice task={task} actualParams={currentActualParams} />}
             {/* 参数 */}
             <h3 className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
               参数配置
             </h3>
             {aspectRatioWarning && (
-              <p role="status" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{aspectRatioWarning}</p>
+              <p role="status" aria-label="图片比例核对" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{aspectRatioWarning}</p>
             )}
             {showSourceInfo && (
               <div className="mb-2 min-w-0 overflow-hidden rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-white/[0.03]">

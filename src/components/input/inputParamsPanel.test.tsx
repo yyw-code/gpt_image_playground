@@ -51,6 +51,16 @@ function control(container: HTMLElement, label: string) {
 }
 
 describe('参数能力展示', () => {
+  it('原生模式说明不拼接比例和上游执行限制，兼容模式明确不能保证像素', () => {
+    const value = props('openai')
+    expect(markup(value).textContent).toContain('不自动向提示词追加比例')
+    expect(markup(value).textContent).toContain('优先使用 PNG')
+    value.activeProfile.codexCli = true
+    const compatible = markup(value)
+    expect(compatible.textContent).toContain('构图比例仅作提示词引导')
+    expect(compatible.textContent).not.toContain('不自动向提示词追加比例')
+  })
+
   it('原生 2.6 可用复杂度，其他通道保留但禁用', () => {
     const value = props('openai')
     value.activeProfile.model = 'gpt-image-2.6-flare'

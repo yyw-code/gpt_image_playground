@@ -491,10 +491,10 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   })
 }
 
-/** 获得执行槽位后提交 Images 请求，独立超时不包含页面排队时间。 */
+/** 获得槽位后提交 Images 请求；仅兼容模式追加构图提示，原生模式保留用户原文，超时不含排队。 */
 async function callImagesApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
-  const aspectPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
+  const aspectPrompt = profile.codexCli
     ? appendImageAspectRatioPrompt(originalPrompt, params.size)
     : originalPrompt
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
@@ -989,7 +989,7 @@ function mergeConcurrentApiResults(results: PromiseSettledResult<CallApiResult>[
   }
 }
 
-/** 合并独立请求结果；Grok 同页面最多并发两张，单张结束即保存并补位，取消等待项不再请求。 */
+/** 合并独立请求结果；Grok 同页面最多并发十张，单张结束即保存并补位，取消等待项不再请求。 */
 async function callCustomHttpImageApiConcurrent(
   opts: CallApiOptions,
   profile: ApiProfile,
@@ -1042,10 +1042,10 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   })
 }
 
-/** 获得执行槽位后提交 Responses 图片工具，超时从实际启动开始。 */
+/** 获得槽位后提交 Responses 图片工具；原生模式仅通过工具字段传尺寸，超时从实际启动开始。 */
 async function callResponsesImageApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
-  const requestPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
+  const requestPrompt = profile.codexCli
     ? appendImageAspectRatioPrompt(prompt, params.size)
     : prompt
   const mime = MIME_MAP[params.output_format] || 'image/png'

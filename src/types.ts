@@ -273,6 +273,8 @@ export interface TaskRecord {
   apiMode?: ApiMode
   /** 生成时使用的模型 ID */
   apiModel?: string
+  /** 创建任务时的图片参数模式；旧记录缺省，展示不依赖后来切换的配置，不含密钥。 */
+  imageParameterMode?: 'native' | 'composition' | 'default'
   /** fal.ai 队列请求 ID，用于连接断开后的结果恢复 */
   falRequestId?: string
   /** fal.ai 队列 endpoint，用于连接断开后的状态和结果查询 */

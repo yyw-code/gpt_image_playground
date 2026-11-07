@@ -31,6 +31,22 @@ async function renderTask(overrides: Partial<TaskRecord>) {
 }
 
 describe('批量任务卡恢复', () => {
+  it('只统计不符的图片，缺少逐图回显时标记未验证并保留成功结果', async () => {
+    const container = await renderTask({
+      status: 'done', params: { ...DEFAULT_PARAMS, n: 3, size: '1024x1024', quality: 'high' },
+      outputImages: ['first', 'second', 'third'],
+      actualParams: { size: '1024x1024', quality: 'high', output_format: 'png' },
+      actualParamsByImage: {
+        first: { size: '1024x1024', quality: 'high', output_format: 'png' },
+        second: { size: '1024x1024', quality: 'low', output_format: 'png' },
+      },
+    })
+    expect(container.textContent).toContain('参数与设置不符 1 张')
+    expect(container.textContent).toContain('部分参数未验证 1 张')
+    expect(container.querySelector('img')).not.toBeNull()
+    expect(container.querySelector('[aria-label^="补齐未完成"]')).toBeNull()
+  })
+
   it('首帧时钟早于请求发送时显示零，不出现负耗时', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000)
     const container = await renderTask({ startedAt: 1001 })

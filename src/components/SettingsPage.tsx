@@ -165,7 +165,7 @@ function isProfileApiProxyEligible(settings: AppSettings, profile: ApiProfile) {
   return !isAsyncCustomProvider(customProvider)
 }
 
-/** 管理画廊、Agent 及通用设置，生图类型简化展示为 ChatGPT/Grok，支持按名称选择本站密钥；返回时保存草稿。 */
+/** 管理画廊、Agent 及通用设置，说明原生参数与兼容构图的边界；支持本站密钥选择，返回时保存草稿。 */
 export default function SettingsPage() {
   const showSettings = useStore((s) => s.showSettings)
   const settingsTabRequest = useStore((s) => s.settingsTabRequest)
@@ -1586,7 +1586,7 @@ export default function SettingsPage() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    开启后应用 Codex CLI 实际支持的参数。
+                    开启：仅用提示词引导构图，不发送精确尺寸、质量和格式，不保证像素尺寸。关闭：按模型能力发送原生参数，不自动拼接构图比例；质量和格式可能被上游调整，请查看结果核对。
                     {!IS_SITE_MODE && <>支持通过链接参数导入：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">codexCli=true</code>。</>}
                   </div>
                 </div>

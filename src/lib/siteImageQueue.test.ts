@@ -1,9 +1,10 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
 import { createDefaultOpenAIProfile, normalizeSettings } from './apiProfiles'
 import { callImageApi } from './api'
 import { callAgentResponsesApi, callBatchImageSingle } from './agentApi'
 import { setSiteConnection } from './siteProfiles'
+import { enqueueImageRequest } from './imageRequestQueue'
 
 vi.mock('./siteMode', () => ({ IS_SITE_MODE: true }))
 
@@ -15,12 +16,23 @@ function response() {
   return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }], output: [{ type: 'image_generation_call', result: 'aW1hZ2U=' }] }), { headers: { 'Content-Type': 'application/json' } })
 }
 
-afterEach(() => {
+let releaseOccupied!: () => void
+let occupied: Promise<void>[] = []
+
+// 真实占用十槽队列中的九个槽位，验证各协议在最后一个槽位饱和后的等待行为。
+beforeEach(() => {
+  const gate = new Promise<void>((resolve) => { releaseOccupied = resolve })
+  occupied = Array.from({ length: 9 }, () => enqueueImageRequest(() => gate))
+})
+
+afterEach(async () => {
+  releaseOccupied()
+  await Promise.all(occupied)
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
 
-it('多图 Images、其他任务的 Responses 和 Agent 单图工具共用 FIFO 串行队列', async () => {
+it('多图 Images、其他任务的 Responses 和 Agent 单图工具共享十槽队列，饱和后 FIFO 等待', async () => {
   let release!: (value: Response) => void
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve })).mockImplementation(async () => response())
   const events = vi.fn()

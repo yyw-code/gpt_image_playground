@@ -95,7 +95,7 @@ interface HintTooltipState {
   startTouch: () => void
 }
 
-/** 展示全部参数并按供应商、模型和通道禁用不支持项；说明本站排队与 Agent 自动数量。 */
+/** 按供应商和通道展示参数；区分原生字段与兼容构图，说明返回值核对和本站排队规则。 */
 export default function InputParamsPanel({
   params,
   setParams,
@@ -338,9 +338,10 @@ export default function InputParamsPanel({
           className="bg-transparent text-xs focus:outline-none disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
         <ButtonTooltip visible={nLimitHint.visible} text={nLimitHintText} />
-        <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text={isGrok ? '目标张数拆为独立单图请求，最多同时生成 2 张；保留部分成功，不自动补图' : IS_SITE_MODE && activeProfile.provider === 'openai' ? '逐张排队，同一页面最多同时生成 1 张；保留成功图片，失败后可手动补图' : '目标张数拆为独立单图请求；张数不是并发限制，实际成功张数以结果为准'} />
+        <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text={isGrok ? '目标张数拆为独立单图请求，同一页面最多同时发送 10 个 Grok 请求；后端繁忙时仍可能排队，保留部分成功，不自动补图' : IS_SITE_MODE && activeProfile.provider === 'openai' ? '同一页面最多同时发送 10 个 ChatGPT 图片请求；后端繁忙时仍可能排队，保留成功图片，失败后可手动补图' : '目标张数拆为独立单图请求；张数不是并发限制，实际成功张数以结果为准'} />
       </label>
       <ParamPopoverChip label="更多" summary={moreSummary} className="sm:min-w-[5rem]">
+        {activeProfile.provider === 'openai' && capabilities.nativeOutput && <p className="text-xs text-gray-500">原生模式通过接口参数发送尺寸，不自动向提示词追加比例。质量、格式是否执行以返回结果为准；优先使用 PNG，其他格式可能被上游替换。</p>}
         {!capabilities.nativeOutput && (
           <>
             <p className="text-gray-500">{isGrok
@@ -494,7 +495,7 @@ export default function InputParamsPanel({
               onToggle={() => onBatchChange({ batchPromptEnabled: !batchEnabled })}
             />
           </div>
-          {IS_SITE_MODE && activeProfile.provider === 'openai' && <p className="text-xs text-gray-500">本站图片请求统一逐张排队，批量并发设置不会增加实际图片并发。</p>}
+          {IS_SITE_MODE && activeProfile.provider === 'openai' && <p className="text-xs text-gray-500">本站 ChatGPT 图片请求在同一页面共享 10 个并发名额，批量并发设置不能突破此上限；后端繁忙时仍可能排队。</p>}
           {batchEnabled && (
             <>
               <div className={ROW_CLASS}>

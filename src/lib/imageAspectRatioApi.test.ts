@@ -38,8 +38,8 @@ function mockImageResponse() {
   })
 }
 
-describe('本站比例提示与原参数兼容', () => {
-  it.each([false, true])('Images 参考图=%s 时补充比例并保留尺寸、质量、格式、压缩率及数量', async (edit) => {
+describe('原生参数与兼容构图分离', () => {
+  it.each([false, true])('Images 参考图=%s 时保留原提示词及尺寸、质量、格式、压缩率和数量', async (edit) => {
     const fetchMock = mockImageResponse()
     const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
     const originalParams = { ...params }
@@ -50,7 +50,7 @@ describe('本站比例提示与原参数兼容', () => {
     expect(url).toBe(`${profile.baseUrl}/images/${edit ? 'edits' : 'generations'}`)
     if (edit) {
       const body = (init as RequestInit).body as FormData
-      expect(body.get('prompt')).toBe(`${prompt}\n\n${composition}`)
+      expect(body.get('prompt')).toBe(prompt)
       expect(body.get('size')).toBe('2016x864')
       expect(body.get('quality')).toBe('high')
       expect(body.get('output_format')).toBe('webp')
@@ -59,14 +59,14 @@ describe('本站比例提示与原参数兼容', () => {
       expect(body.get('image[]')).toBeInstanceOf(Blob)
     } else {
       expect({ ...JSON.parse(String((init as RequestInit).body)), n: JSON.parse(String((init as RequestInit).body)).n ?? 1 }).toMatchObject({
-        prompt: `${prompt}\n\n${composition}`, size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, n: 1,
+        prompt, size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, n: 1,
       })
     }
     expect(params).toEqual(originalParams)
     expect(result.actualParams).toMatchObject({ size: '1915x821', quality: 'medium', output_format: 'png' })
   })
 
-  it.each([false, true])('Responses 参考图=%s 时将比例放进改写保护中，每张图保留工具参数', async (edit) => {
+  it.each([false, true])('Responses 参考图=%s 时不自动拼比例，每张图保留工具参数', async (edit) => {
     const fetchMock = mockImageResponse()
     const responsesProfile = { ...profile, apiMode: 'responses' as const }
     const settings = normalizeSettings({ profiles: [responsesProfile], activeProfileId: profile.id, allowPromptRewrite: false })
@@ -75,7 +75,7 @@ describe('本站比例提示与原参数兼容', () => {
     for (const [url, init] of fetchMock.mock.calls) {
       expect(url).toBe(`${profile.baseUrl}/responses`)
       const body = JSON.parse(String((init as RequestInit).body))
-      const expectedPrompt = `${PROMPT_REWRITE_GUARD_PREFIX}\n${prompt}\n\n${composition}`
+      const expectedPrompt = `${PROMPT_REWRITE_GUARD_PREFIX}\n${prompt}`
       if (edit) expect(body.input[0].content).toEqual([{ type: 'input_text', text: expectedPrompt }, { type: 'input_image', image_url: referenceImage }])
       else expect(body.input).toBe(expectedPrompt)
       expect(body.tools[0]).toMatchObject({ size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, action: edit ? 'edit' : 'generate' })
@@ -95,18 +95,22 @@ describe('本站比例提示与原参数兼容', () => {
     expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toMatchObject({ prompt, size: '2016x864', quality: 'high' })
   })
 
-  it.each([false, true])('Agent 混合配置=%s 时要求每个工具提示词包含比例，用户消息保持原文', async (hybrid) => {
+  it.each([false, true])('Agent 混合配置=%s 时仅为兼容图片通道追加构图指令', async (hybrid) => {
     const fetchMock = mockImageResponse()
     const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id, agentApiConfigMode: hybrid ? 'hybrid' : 'single' })
     await callAgentResponsesApi({ settings, profile, imageProfile: hybrid ? { ...profile, codexCli: true } : undefined, params, input: prompt })
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
     expect(body.input).toBe(prompt)
-    expect(body.instructions).toContain(`Append this composition instruction to every image prompt, including reference-image edits and batch items: "${composition}"`)
-    if (hybrid) expect(body.instructions).not.toContain('Generate at 2016x864 resolution.')
-    else expect(body.tools[0]).toMatchObject({ size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80 })
+    if (hybrid) {
+      expect(body.instructions).toContain(`Append this composition instruction to every image prompt, including reference-image edits and batch items: "${composition}"`)
+      expect(body.instructions).not.toContain('Generate at 2016x864 resolution.')
+    } else {
+      expect(body.instructions).not.toContain('Append this composition instruction')
+      expect(body.tools[0]).toMatchObject({ size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80 })
+    }
   })
 
-  it.each([false, true])('Agent 批量参考图=%s 时补充比例且不重复模型已带的尾注', async (edit) => {
+  it.each([false, true])('Agent 原生批量参考图=%s 时保留用户已有的构图要求，不删除或重复', async (edit) => {
     const fetchMock = mockImageResponse()
     const result = await callBatchImageSingle({
       profile, params, prompt: `${prompt}\n\n${composition}`, batchItemId: 'cover',
@@ -119,6 +123,15 @@ describe('本站比例提示与原参数兼容', () => {
     if (edit) expect(body.input[0].content[1]).toEqual({ type: 'input_image', image_url: referenceImage })
     expect(body.tools[0]).toMatchObject({ size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80 })
     expect(result.image?.actualParams).toMatchObject({ size: '1915x821', quality: 'medium' })
+  })
+
+  it.each([false, true])('Agent 原生批量参考图=%s 时不追加构图指令', async (edit) => {
+    const fetchMock = mockImageResponse()
+    await callBatchImageSingle({ profile, params, prompt, batchItemId: 'cover', referenceImageDataUrls: edit ? [referenceImage] : [], allowPromptRewrite: false })
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    const text = edit ? body.input[0].content[0].text : body.input
+    expect(text).not.toContain('Composition:')
+    expect(body.tools[0].size).toBe(params.size)
   })
 
   it('Codex 仅附带构图比例，不发送精确像素、质量或原生输出参数', async () => {

@@ -65,7 +65,7 @@ const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '- Do not use LaTeX delimiters like `\\(...\\)` or `\\[...\\]` in visible assistant text.',
 ].join('\n')
 
-/** 生成 Agent 工具策略与构图引导；受限通道不再要求精确像素前缀。 */
+/** 生成 Agent 工具策略；仅兼容图片通道追加构图引导，原生尺寸交给工具参数。 */
 function createAgentInstructions(settings: AppSettings, params: TaskParams, imageProfile: ApiProfile) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
@@ -87,7 +87,7 @@ function createAgentInstructions(settings: AppSettings, params: TaskParams, imag
     '- When the requested task is complete, stop calling tools and provide the final response.',
   ]
 
-  if (imageProfile.codexCli || IS_SITE_MODE && imageProfile.provider === 'openai') {
+  if (imageProfile.codexCli) {
     const aspectInstruction = getImageAspectRatioInstruction(params.size)
     if (aspectInstruction) instructions.push('', `- Append this composition instruction to every image prompt, including reference-image edits and batch items: "${aspectInstruction}"`)
   }
@@ -743,7 +743,7 @@ export async function callBatchImageSingle(opts: Parameters<typeof callBatchImag
   return enqueueImageRequest(() => callBatchImageSingleImmediate(opts), { signal: opts.signal, isCancelled: opts.isCancelled, onState: opts.onRequestState })
 }
 
-/** 获得页面图片槽位后执行 Agent 单图工具，保留既有回调和独立超时。 */
+/** 获得槽位后执行 Agent 单图工具；原生模式保留原提示词，兼容模式追加构图，保留回调和独立超时。 */
 async function callBatchImageSingleImmediate(opts: {
   profile: ApiProfile
   params: TaskParams
@@ -775,7 +775,7 @@ async function callBatchImageSingleImmediate(opts: {
     const referenceMapping = referenceImageDataUrls.length > 0
       ? `Attached reference images correspond to these ids, in order: ${(referenceIds ?? []).map((id) => `<ref id="${id}" />`).join(', ') || 'reference images'}.`
       : ''
-    const aspectPrompt = profile.codexCli || IS_SITE_MODE && profile.provider === 'openai'
+    const aspectPrompt = profile.codexCli
       ? appendImageAspectRatioPrompt(prompt, params.size)
       : prompt
     const promptText = allowPromptRewrite ? aspectPrompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`

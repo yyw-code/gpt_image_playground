@@ -540,6 +540,108 @@ describe('task retry', () => {
     expect(useStore.getState().showToast).toHaveBeenCalledWith('生成完成：成功 2 张，失败 1 张', 'error')
   })
 
+  it.each([
+    ['native', true], ['composition', false], ['default', false],
+  ] as const)('rejects partial retry changing %s mode before mutating saved results', async (imageParameterMode, codexCli) => {
+    const profile = createDefaultOpenAIProfile({ id: 'retry-profile', apiKey: 'test-key', codexCli })
+    const original = task({ apiProfileId: profile.id, apiProvider: 'openai', apiModel: profile.model, imageParameterMode,
+      params: { ...DEFAULT_PARAMS, n: 2, output_format: 'webp' }, outputImages: ['old-output'],
+      outputErrors: [{ requestIndex: 1, error: 'busy' }], actualParamsByImage: { 'old-output': { output_format: 'png' } } })
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id }), tasks: [original] })
+    await putDbTask(original)
+    await retryTask(original, 1)
+    expect(useStore.getState().tasks[0]).toEqual(original)
+    expect((await getAllTasks())[0]).toEqual(original)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('恢复原配置'), 'error')
+  })
+
+  it('rejects partial retry when normalization would overwrite a saved parameter', async () => {
+    const profile = createDefaultOpenAIProfile({ id: 'retry-profile', apiKey: 'test-key', codexCli: false })
+    const original = task({ apiProfileId: profile.id, apiProvider: 'openai', apiModel: profile.model, imageParameterMode: 'native',
+      params: { ...DEFAULT_PARAMS, n: 2, complexity: 'high' }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 1, error: 'busy' }] })
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id }), tasks: [original] })
+    await retryTask(original, 1)
+    expect(useStore.getState().tasks[0]).toEqual(original)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('恢复原配置'), 'error')
+  })
+
+  it.each(['native', undefined] as const)('retains original parameter verification through successful partial retry (%s)', async (imageParameterMode) => {
+    const profile = createDefaultOpenAIProfile({ id: 'retry-profile', apiKey: 'test-key', codexCli: false })
+    const original = task({ apiProfileId: profile.id, apiProvider: 'openai', apiModel: profile.model, imageParameterMode,
+      params: { ...DEFAULT_PARAMS, n: 2, output_format: 'webp' }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 1, error: 'busy' }],
+      actualParamsByImage: { 'old-output': { output_format: 'png' } } })
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id }), tasks: [original] })
+    vi.mocked(callImageApi).mockResolvedValueOnce({ images: ['data:image/png;base64,new'], actualParams: { output_format: 'png' } })
+    await retryTask(original, 1)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    const result = useStore.getState().tasks[0]
+    expect(result.params).toEqual(original.params)
+    expect(result.imageParameterMode).toBe(imageParameterMode)
+    expect(result.outputImages[0]).toBe('old-output')
+    const { getImageParameterCheck, getTaskImageActualParams } = await import('./lib/paramDisplay')
+    expect(getImageParameterCheck(result, getTaskImageActualParams(result, 'old-output')).mismatches.map((item) => item.key)).toEqual(['output_format'])
+  })
+
+  it.each([
+    [{}, 200], [{ resolution: '2k' }, 200], [{ aspect_ratio: '16:9' }, 200],
+    [{ aspect_ratio: 'auto' }, 200], [{ resolution: '2k', aspect_ratio: '16:9' }, 200], [{}, 500],
+  ] as const)('fills missing Grok defaults only in requests, preserving legacy results (%j, HTTP %s)', async (geometry, status) => {
+    const profile = { id: 'legacy-grok', name: 'Grok', provider: 'grok', baseUrl: 'https://example.invalid/v1', apiKey: 'test-key', model: 'grok-imagine-image' }
+    const original = task({ apiProfileId: profile.id, apiProvider: 'grok', apiModel: profile.model,
+      params: { ...DEFAULT_PARAMS, ...geometry, n: 3 }, outputImages: ['old-output'],
+      outputErrors: [{ requestIndex: 1, error: 'busy' }, { requestIndex: 2, error: 'busy' }],
+      actualParamsByImage: { 'old-output': { size: '1920x1080', output_format: 'png' } } })
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id }), tasks: [original], setConfirmDialog: vi.fn() })
+    const { callImageApi: realCallImageApi } = await vi.importActual<typeof import('./lib/api')>('./lib/api')
+    vi.mocked(callImageApi).mockImplementation(realCallImageApi)
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify(status === 200
+      ? { data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUg==' }] } : { error: { message: 'busy' } }), { status }))
+    try {
+      await retryTask(original, 1)
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+      const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+      expect(body).toMatchObject({ n: 1, resolution: 'resolution' in geometry ? geometry.resolution : '1k' })
+      if ('aspect_ratio' in geometry && geometry.aspect_ratio === 'auto') expect(body).not.toHaveProperty('aspect_ratio')
+      else expect(body.aspect_ratio).toBe('aspect_ratio' in geometry ? geometry.aspect_ratio : '1:1')
+      expect(useStore.getState().tasks[0].params).toEqual(original.params)
+      if (status === 500) {
+        expect(useStore.getState().tasks[0].outputImages).toEqual(['old-output'])
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUg==' }] })))
+        await retryTask(useStore.getState().tasks[0], 1)
+        // HTTP 500 的结果仍可能已计费；默认值兼容不能绕过未知结果确认。
+        expect(fetchMock).toHaveBeenCalledOnce()
+        expect(useStore.getState().setConfirmDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '确认重新生成未知结果？' }))
+        await retryTask(useStore.getState().tasks[0], 1, true)
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+        await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+      }
+      const result = useStore.getState().tasks[0]
+      expect(result.params).toEqual(original.params)
+      expect(result.imageParameterMode).toBeUndefined()
+      expect(result.outputImages).toHaveLength(2)
+      expect(result.outputImages[0]).toBe('old-output')
+      expect(result.outputErrors).toEqual([{ requestIndex: 2, error: 'busy' }])
+      expect(result.actualParamsByImage?.['old-output']).toEqual(original.actualParamsByImage?.['old-output'])
+      expect((await getAllTasks()).find((item) => item.id === original.id)?.params).toEqual(original.params)
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('does not exempt real Grok parameter changes alongside missing defaults', async () => {
+    const profile = { id: 'legacy-grok', name: 'Grok', provider: 'grok', baseUrl: 'https://example.invalid/v1', apiKey: 'test-key', model: 'grok-imagine-image' }
+    const original = task({ apiProfileId: profile.id, apiProvider: 'grok', apiModel: profile.model,
+      params: { ...DEFAULT_PARAMS, n: 2, output_format: 'webp' }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 1, error: 'busy' }] })
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id }), tasks: [original] })
+    await retryTask(original, 1)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks[0]).toEqual(original)
+    expect(useStore.getState().showToast).toHaveBeenCalledWith(expect.stringContaining('恢复原配置'), 'error')
+  })
+
   it('keeps successes after partial retry fails completely, then fills the same record', async () => {
     const original = boundTask({ params: { ...DEFAULT_PARAMS, n: 3 }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 0, error: 'busy' }, { requestIndex: 2, error: 'busy' }] })
     useStore.setState({ tasks: [original] })
@@ -580,7 +682,7 @@ describe('task retry', () => {
 
   it.each([true, false])('clearing data cancels waiting gallery requests only when tasks are selected (%s)', async (clearTasks) => {
     const blocker = deferred<void>()
-    const first = enqueueImageRequest(() => blocker.promise)
+    const first = Promise.all(Array.from({ length: 10 }, () => enqueueImageRequest(() => blocker.promise)))
     const settled = deferred<void>()
     const worker = vi.fn(async () => ({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] }))
     vi.mocked(callImageApi).mockImplementationOnce((opts) => enqueueImageRequest(worker, {
@@ -679,17 +781,19 @@ describe('aspect ratio revised prompt handling', () => {
     vi.resetModules()
   })
 
-  it.each([false, true])('keeps genuine rewrites=%s while ignoring only the injected composition', async (rewritten) => {
+  it.each([false, true])('preserves native response text including upstream composition additions=%s', async (rewritten) => {
     const revised = rewritten ? 'Draw a dog.' : 'Draw a cat.'
+    const responsePrompt = rewritten ? `${revised}\n\nComposition: 21:9 aspect ratio, landscape canvas.` : revised
     vi.mocked(callImageApi).mockResolvedValueOnce({
       images: ['data:image/png;base64,1915x821'], actualParams: { quality: 'medium' }, actualParamsList: [{}],
-      revisedPrompts: [`${revised}\n\nComposition: 21:9 aspect ratio, landscape canvas.`],
+      revisedPrompts: [responsePrompt],
     })
     await store.submitTask()
     await vi.waitFor(() => expect(store.useStore.getState().tasks[0]?.status).toBe('done'))
     const state = store.useStore.getState()
     const saved = state.tasks[0]
-    expect(saved.revisedPromptByImage?.[saved.outputImages[0]]).toBe(revised)
+    expect(saved.imageParameterMode).toBe('native')
+    expect(saved.revisedPromptByImage?.[saved.outputImages[0]]).toBe(responsePrompt)
     if (rewritten) expect(state.setConfirmDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '检测到 Codex CLI API' }))
     else expect(state.setConfirmDialog).not.toHaveBeenCalled()
     expect(saved.actualParams?.quality).toBe('medium')
@@ -705,6 +809,7 @@ describe('aspect ratio revised prompt handling', () => {
     await store.submitTask()
     await vi.waitFor(() => expect(store.useStore.getState().tasks[0]?.status).toBe('done'))
     const saved = store.useStore.getState().tasks[0]
+    expect(saved.imageParameterMode).toBe('composition')
     expect(saved.revisedPromptByImage?.[saved.outputImages[0]]).toBe('Draw a cat.')
     expect(store.useStore.getState().setConfirmDialog).not.toHaveBeenCalled()
   })
@@ -4718,7 +4823,7 @@ describe('agent built-in image tool failure', () => {
       return { batchItemId: opts.batchItemId, image, error: null }
     }, { signal: opts.signal, isCancelled: opts.isCancelled }))
     const blocker = deferred<void>()
-    const first = enqueueImageRequest(() => blocker.promise)
+    const first = Promise.all(Array.from({ length: 10 }, () => enqueueImageRequest(() => blocker.promise)))
     try {
       await submitAgentMessage()
       await vi.waitFor(() => expect(hybrid ? callImageApi : callBatchImageSingle).toHaveBeenCalledTimes(single ? 1 : 2))
@@ -4748,7 +4853,7 @@ describe('agent built-in image tool failure', () => {
       return { batchItemId: opts.batchItemId, image: null, error: 'unexpected request' }
     }, { signal: opts.signal, isCancelled: opts.isCancelled }).finally(finished))
     const blocker = deferred<void>()
-    const first = enqueueImageRequest(() => blocker.promise)
+    const first = Promise.all(Array.from({ length: 10 }, () => enqueueImageRequest(() => blocker.promise)))
     try {
       await submitAgentMessage()
       await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalledTimes(2))
@@ -6376,7 +6481,10 @@ describe('Grok task lifecycle', () => {
 
   it.each([200, 500])('does not start queued Grok requests after deletion when the first batch returns HTTP %s', async (status) => {
     const { callImageApi: realCallImageApi } = await vi.importActual<typeof import('./lib/api')>('./lib/api')
+    const { enqueueImageRequest: enqueueRealImageRequest } = await import('./lib/imageRequestQueue')
     const firstBatch = deferred<void>()
+    // 预占两个 Grok 槽位，使十张批次中保留两张等待项，验证删除后不会继续发送。
+    const occupied = Promise.all(Array.from({ length: 2 }, () => enqueueRealImageRequest(() => firstBatch.promise, { lane: 'grok' })))
     const settled = deferred<void>()
     vi.mocked(callImageApi).mockImplementation(async (opts) => {
       try {
@@ -6390,17 +6498,18 @@ describe('Grok task lifecycle', () => {
       return new Response(JSON.stringify(status === 200 ? { data: [{ b64_json: 'iVBORw0KGgoAAAANSUhEUg==' }] } : { error: { message: 'failed' } }), { status })
     })
     try {
-      useStore.setState({ params: { ...DEFAULT_PARAMS, n: 4 } })
+      useStore.setState({ params: { ...DEFAULT_PARAMS, n: 10 } })
       await submitTask()
-      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8))
       await removeTask(useStore.getState().tasks[0])
       firstBatch.resolve()
       await settled.promise
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock).toHaveBeenCalledTimes(8)
       expect(useStore.getState().tasks).toEqual([])
       expect(await getAllTasks()).toEqual([])
     } finally {
       firstBatch.resolve()
+      await occupied
       fetchMock.mockRestore()
     }
   })
