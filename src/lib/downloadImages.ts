@@ -3,6 +3,8 @@ import type { TaskRecord } from '../types'
 import { trackDataTransfer } from './dataOperations'
 import { getNumberedFileNameBase, sanitizeFileNamePart } from './exportFileName'
 import { ensureImageCached } from './imageCache'
+import { getBase64ImageFormat, MIME_MAP } from './imageApiShared'
+import { bytesToBase64 } from './dataUrl'
 import { apiFetch, isTauri } from './platform'
 import { pickSaveDir, saveFile, saveFileToDir, type SaveDir } from './saveFile'
 
@@ -148,6 +150,7 @@ export function getImageZipEntries(imageIds: string[], fileNameBase = 'image'): 
   }))
 }
 
+/** 读取原图并按文件头纠正 MIME；只调整类型元数据，不转码、不覆盖历史原图，读取失败向上抛出。 */
 async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
   let src = imageIdOrUrl
   if (!imageIdOrUrl.startsWith('data:') && !imageIdOrUrl.startsWith('http://') && !imageIdOrUrl.startsWith('https://')) {
@@ -156,7 +159,10 @@ async function getImageBlob(imageIdOrUrl: string): Promise<Blob> {
 
   const res = await apiFetch(src)
   if (!res.ok && !src.startsWith('data:')) throw new Error(`读取图片失败：${imageIdOrUrl}`)
-  return await res.blob()
+  const blob = await res.blob()
+  const header = new Uint8Array(await blob.slice(0, 12).arrayBuffer())
+  const format = getBase64ImageFormat(bytesToBase64(header))
+  return format && blob.type !== MIME_MAP[format] ? new Blob([blob], { type: MIME_MAP[format] }) : blob
 }
 
 function getBlobExtension(blob: Blob): string {
