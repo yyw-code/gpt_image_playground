@@ -41,13 +41,14 @@ async function embedDefaultConfig(value: string) {
   return `embedded-config:${Buffer.from(readFileSync(path)).toString('base64')}`
 }
 
+/** 加载构建及运行配置；单元测试不读取本机开发代理，避免个人联调配置改变测试前提。 */
 export default defineConfig(async ({ command, mode }) => {
   // 客户端构建只读取 src-tauri/ 下的 env 文件，与网页版部署配置隔离
   const envDir = process.env.TAURI_ENV_PLATFORM ? resolve('src-tauri') : process.cwd()
   const env = loadEnv(mode, envDir, '')
   const defaultApiUrl = await embedDefaultConfig(process.env.VITE_DEFAULT_API_URL ?? env.VITE_DEFAULT_API_URL ?? '')
   if (defaultApiUrl.startsWith('embedded-config:')) process.env.VITE_DEFAULT_API_URL = defaultApiUrl
-  const devProxyConfig = command === 'serve' ? loadDevProxyConfig() : null
+  const devProxyConfig = command === 'serve' && mode !== 'test' ? loadDevProxyConfig() : null
 
   return {
     plugins: [react()],
