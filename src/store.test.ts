@@ -144,7 +144,7 @@ import { callImageApi } from './lib/api'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
-import { clearData, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, retryTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+import { clearData, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, openImageRegeneration, submitImageRegeneration, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, restoreExplicitPresetConfig, retryTask, reuseConfig, stopAgentResponse, stopBatchPrompts, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
 
 const commitTaskDeletionImplementation = vi.mocked(commitTaskDeletion).getMockImplementation()!
 const deleteDbImageImplementation = vi.mocked(deleteDbImage).getMockImplementation()!
@@ -153,6 +153,165 @@ const callBatchImageSingleImplementation = vi.mocked(callBatchImageSingle).getMo
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
+
+describe('独立图片重生成', () => {
+  beforeEach(async () => {
+    await clearTasks()
+    await clearImages()
+    vi.mocked(callImageApi).mockReset()
+    vi.mocked(callImageApi).mockResolvedValue({ images: ['data:image/png;base64,new'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    const profile = createDefaultOpenAIProfile({ id: 'regeneration-profile', baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', codexCli: false })
+    useStore.setState({ settings: normalizeSettings({ ...DEFAULT_SETTINGS, profiles: [profile], activeProfileId: profile.id }), tasks: [task({ outputImages: [imageA.id, imageB.id], params: { ...DEFAULT_PARAMS, n: 2 }, apiProfileId: profile.id, apiModel: profile.model, apiConfigScope: 'gallery', apiMode: profile.apiMode })], prompt: '底部未发送草稿', inputImages: [imageB], batchProgress: null, imageRegeneration: null, showToast: vi.fn() })
+    await putImage({ ...imageA, source: 'generated', createdAt: 1 })
+    await putImage({ ...imageB, source: 'generated', createdAt: 1 })
+  })
+
+  it('对成功批次中的单张提交新版本，保留原图和输入草稿', async () => {
+    const original = useStore.getState().tasks[0]
+    openImageRegeneration([{ taskId: original.id, requestIndex: 1, imageId: imageB.id }])
+    const draft = useStore.getState().imageRegeneration!
+    const ids = await submitImageRegeneration({ ...draft, prompt: '把背景改为蓝色' })
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(callImageApi).mock.calls[0][0]).toMatchObject({ prompt: '把背景改为蓝色', params: { n: 1 }, inputImageDataUrls: [imageB.dataUrl] })
+    expect(useStore.getState()).toMatchObject({ prompt: '底部未发送草稿', inputImages: [imageB] })
+    expect(useStore.getState().tasks.find((t) => t.id === original.id)).toEqual(original)
+    expect(useStore.getState().tasks.find((t) => t.id === ids[0])?.regeneration).toMatchObject({ taskId: original.id, requestIndex: 1, imageId: imageB.id, mode: 'edit' })
+    await vi.waitFor(() => expect(useStore.getState().tasks.find((t) => t.id === ids[0])?.status).toBe('done'))
+  })
+
+  it('单图与批量使用同一简化操作规则，重生成为原提示词加可选要求', () => {
+    const original = useStore.getState().tasks[0]
+    const targets = [imageA, imageB].map((image, requestIndex) => ({ taskId: original.id, requestIndex, imageId: image.id }))
+    openImageRegeneration(targets)
+    expect(useStore.getState().imageRegeneration).toMatchObject({ mode: 'edit', promptMode: 'replace', prompt: '' })
+    openImageRegeneration(targets, 'rerun')
+    expect(useStore.getState().imageRegeneration).toMatchObject({ mode: 'rerun', promptMode: 'append', prompt: '' })
+  })
+
+  it('画板参考图与位置评论进入真实发送入口，但不进入底部输入', async () => {
+    const original = useStore.getState().tasks[0]
+    openImageRegeneration([{ taskId: original.id, requestIndex: 0, imageId: imageA.id }])
+    await submitImageRegeneration({ ...useStore.getState().imageRegeneration!, prompt: '', annotation: { image: { id: 'annotated', dataUrl: 'data:image/png;base64,annotated' }, comments: [{ x: .7, y: .5, text: '改成圆形' }] } })
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(callImageApi).mock.calls[0][0].inputImageDataUrls).toEqual(['data:image/png;base64,annotated'])
+    expect(vi.mocked(callImageApi).mock.calls[0][0].prompt).toContain('X=70%')
+    expect(vi.mocked(callImageApi).mock.calls[0][0].prompt).toContain('改成圆形')
+    expect(useStore.getState().inputImages).toEqual([imageB])
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+  })
+
+  it('多张来源逐张传图，每张生成两张候选，参数覆盖生效', async () => {
+    const original = useStore.getState().tasks[0]
+    const targets = [imageA, imageB].map((image, requestIndex) => ({ taskId: original.id, requestIndex, imageId: image.id }))
+    const ids = await submitImageRegeneration({ targets, mode: 'edit', promptMode: 'replace', prompt: '改为蓝色', count: 2, params: { ...DEFAULT_PARAMS, size: '1536x1024', quality: 'high', output_format: 'webp', output_compression: 80 } })
+    expect(ids).toHaveLength(2)
+    expect(callImageApi).toHaveBeenCalledTimes(2)
+    const calls = vi.mocked(callImageApi).mock.calls.map(([request]) => request)
+    expect(calls.map((request) => request.inputImageDataUrls)).toEqual([[imageA.dataUrl], [imageB.dataUrl]])
+    for (const request of calls) expect(request.params).toMatchObject({ n: 2, size: '1536x1024', quality: 'high', output_format: 'webp', output_compression: 80 })
+    expect(useStore.getState().tasks.find((item) => item.id === original.id)).toEqual(original)
+  })
+
+  it.each([0, -1, 1.5, 2224, NaN, Infinity, 6])('非法或整批超限数量 %s 在写库和发送前拦截', async (count) => {
+    const original = useStore.getState().tasks[0]
+    const targets = [imageA, imageB].map((image, requestIndex) => ({ taskId: original.id, requestIndex, imageId: image.id }))
+    await expect(submitImageRegeneration({ targets, mode: 'edit', promptMode: 'replace', prompt: '修改', count })).rejects.toThrow(/数量|10 张/)
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([original])
+  })
+
+  it('批量即使绕过页面带入标注也拒绝发送', async () => {
+    const original = useStore.getState().tasks[0]
+    const targets = [imageA, imageB].map((image, requestIndex) => ({ taskId: original.id, requestIndex, imageId: image.id }))
+    await expect(submitImageRegeneration({ targets, mode: 'edit', promptMode: 'replace', prompt: '修改', count: 1, annotation: { image: imageA, comments: [] } })).rejects.toThrow('画板标注')
+    expect(callImageApi).not.toHaveBeenCalled()
+  })
+
+  it('保留 Agent 来源的配置归属，新版本不复制对话关系', async () => {
+    const state = useStore.getState()
+    const profile = { ...state.settings.profiles[0], id: 'agent-image', apiKey: 'agent-test-key' }
+    const source = { ...state.tasks[0], sourceMode: 'agent' as const, apiConfigScope: 'agent' as const, apiProfileId: profile.id, agentConversationId: 'conversation-a' }
+    useStore.setState({ settings: normalizeSettings({ ...state.settings, agentProfiles: [profile] }), tasks: [source] })
+    openImageRegeneration([{ taskId: source.id, requestIndex: 0, imageId: imageA.id }], 'rerun')
+    const ids = await submitImageRegeneration(useStore.getState().imageRegeneration!)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
+    const result = useStore.getState().tasks.find((item) => item.id === ids[0])!
+    expect(result.apiConfigScope).toBe('agent')
+    expect(result.apiProfileId).toBe(profile.id)
+    expect(result.agentConversationId).toBeUndefined()
+    await vi.waitFor(() => expect(useStore.getState().tasks.find((item) => item.id === ids[0])?.status).toBe('done'))
+  })
+
+  it('任一源图或原配置丢失时，整批校验失败且不发请求', async () => {
+    const original = useStore.getState().tasks[0]
+    const targets = [{ taskId: original.id, requestIndex: 0, imageId: imageA.id }, { taskId: original.id, requestIndex: 1, imageId: 'missing' }]
+    await expect(submitImageRegeneration({ targets, mode: 'edit', promptMode: 'replace', prompt: '修改', count: 1 })).rejects.toThrow('来源')
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toHaveLength(1)
+  })
+
+  it('持久化失败时不发送未保存任务，也不覆盖来源', async () => {
+    const original = useStore.getState().tasks[0]
+    openImageRegeneration([{ taskId: original.id, requestIndex: 0, imageId: imageA.id }])
+    vi.mocked(putDbTask).mockRejectedValueOnce(new Error('本地空间不足'))
+    await expect(submitImageRegeneration({ ...useStore.getState().imageRegeneration!, prompt: '修改' })).rejects.toThrow('本地空间不足')
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toEqual([original])
+  })
+
+  it('整批持久化失败时保留面板草稿并抛出错误，不误报提交成功', async () => {
+    const original = useStore.getState().tasks[0]
+    const targets = [imageA, imageB].map((image, requestIndex) => ({ taskId: original.id, requestIndex, imageId: image.id }))
+    openImageRegeneration(targets)
+    const draft = { ...useStore.getState().imageRegeneration!, promptMode: 'replace' as const, prompt: '修改' }
+    vi.mocked(putDbTask).mockRejectedValueOnce(new Error('本地空间不足')).mockRejectedValueOnce(new Error('本地空间不足'))
+    await expect(submitImageRegeneration(draft)).rejects.toThrow('本地空间不足')
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().imageRegeneration).not.toBeNull()
+    expect(useStore.getState().batchProgress).toBeNull()
+  })
+
+  it('停止剩余提交不重发已开始图片，重复点击被拒绝', async () => {
+    const original = useStore.getState().tasks[0]
+    const targets = [imageA, imageB].map((image, requestIndex) => ({ taskId: original.id, requestIndex, imageId: image.id }))
+    useStore.setState({ settings: { ...useStore.getState().settings, batchPromptMode: 'queue' } })
+    let finish!: (value: Awaited<ReturnType<typeof callImageApi>>) => void
+    vi.mocked(callImageApi).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const draft = { targets, mode: 'edit' as const, promptMode: 'replace' as const, prompt: '修改', count: 1 }
+    const pending = submitImageRegeneration(draft)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
+    await expect(submitImageRegeneration(draft)).rejects.toThrow('重复提交')
+    stopBatchPrompts()
+    expect(await pending).toHaveLength(1)
+    expect(useStore.getState().batchProgress).toBeNull()
+    finish({ images: ['data:image/png;base64,stopped-output'], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    await vi.waitFor(() => expect(useStore.getState().tasks[0].status).toBe('done'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('原配置已删除时拒绝提交，显式选择新配置后才发送', async () => {
+    const original = { ...useStore.getState().tasks[0], apiProfileId: 'deleted-profile' }
+    useStore.setState({ tasks: [original] })
+    openImageRegeneration([{ taskId: original.id, requestIndex: 0, imageId: imageA.id }])
+    const draft = { ...useStore.getState().imageRegeneration!, prompt: '修改' }
+    await expect(submitImageRegeneration(draft)).rejects.toThrow('配置或模型')
+    expect(callImageApi).not.toHaveBeenCalled()
+    const profile = useStore.getState().settings.profiles[0]
+    const ids = await submitImageRegeneration({ ...draft, profile: { id: profile.id, scope: 'gallery', model: profile.model } })
+    await vi.waitFor(() => expect(useStore.getState().tasks.find((item) => item.id === ids[0])?.status).toBe('done'))
+    expect(callImageApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('逐图检查继承的不可用输出参数，不静默清洗后计费', async () => {
+    const first = useStore.getState().tasks[0]
+    const second = { ...first, id: 'invalid-output-source', params: { ...first.params, output_compression: 80 } }
+    useStore.setState({ tasks: [first, second] })
+    const targets = [first, second].map((task) => ({ taskId: task.id, requestIndex: 0, imageId: imageA.id }))
+    await expect(submitImageRegeneration({ targets, mode: 'edit', promptMode: 'replace', prompt: '修改', count: 1 })).rejects.toThrow('压缩率')
+    expect(callImageApi).not.toHaveBeenCalled()
+    expect(useStore.getState().tasks).toHaveLength(2)
+  })
+})
 
 describe('error toast messages', () => {
   it('drops long error detail after the failure title', () => {

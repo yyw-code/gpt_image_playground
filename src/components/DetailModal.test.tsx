@@ -10,7 +10,7 @@ import { DEFAULT_SETTINGS } from '../lib/apiProfiles'
 const mocks = vi.hoisted(() => ({ state: {} as Record<string, unknown>, imageDataUrl: 'data:image/png;base64,aW1hZ2U=' }))
 vi.mock('../store', () => ({
   useStore: (select: (state: Record<string, unknown>) => unknown) => select(mocks.state),
-  reuseConfig: vi.fn(), editOutputs: vi.fn(), removeTask: vi.fn(), retryTask: vi.fn(),
+  reuseConfig: vi.fn(), editOutputs: vi.fn(), openImageRegeneration: vi.fn(), removeTask: vi.fn(), retryTask: vi.fn(),
   showCodexCliPrompt: vi.fn(), getCodexCliPromptKey: () => 'test-profile',
 }))
 vi.mock('../lib/imageCache', () => ({
@@ -25,7 +25,7 @@ vi.mock('../lib/downloadImages', async (importOriginal) => ({
 }))
 
 import DetailModal from './DetailModal'
-import { retryTask } from '../store'
+import { retryTask, openImageRegeneration } from '../store'
 import { downloadImageIds, downloadImageEntriesAsZip, getImageZipEntries } from '../lib/downloadImages'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -360,4 +360,22 @@ describe('详情原图尺寸与比例', () => {
     expect(card('格式')?.textContent).not.toContain('png')
     expect(card('生成张数')?.textContent).toContain('2|1')
   })
+})
+
+it('批次中选中第二张后只修改该请求槽位，重跑为独立入口', async () => {
+  task.params.n = 2
+  task.outputImages = ['output', 'second']
+  const { container } = await renderDetail()
+  const select = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('第 2 张') && button.textContent.includes('已成功'))!
+  await act(async () => select.click())
+  const preview = container.querySelector<HTMLImageElement>('img[data-image-id="second"]')!
+  expect(preview.dataset.requestIndex).toBe('1')
+  await act(async () => preview.click())
+  expect(mocks.state.setLightboxImageId).toHaveBeenLastCalledWith('second', task.outputImages, null, { taskId: task.id, requestIndex: 1, imageId: 'second' })
+  const edit = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('修改这张'))!
+  await act(async () => edit.click())
+  expect(openImageRegeneration).toHaveBeenLastCalledWith([{ taskId: task.id, requestIndex: 1, imageId: 'second' }])
+  const rerun = [...container.querySelectorAll('button')].find((button) => button.textContent === '按原提示词重生成这张')!
+  await act(async () => rerun.click())
+  expect(openImageRegeneration).toHaveBeenLastCalledWith([{ taskId: task.id, requestIndex: 1, imageId: 'second' }], 'rerun')
 })

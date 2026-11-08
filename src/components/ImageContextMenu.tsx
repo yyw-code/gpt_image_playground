@@ -1,14 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { MAX_INPUT_IMAGES } from '../types'
-import { useStore, addImageFromUrl } from '../store'
+import { useStore, addImageFromUrl, openImageRegeneration } from '../store'
 import { canCopyImageToClipboard, copyImageSourceToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getDownloadErrorMessage, getImageZipEntries, withSaveLocation } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { ensureImageCached } from '../lib/imageCache'
+import { getImageRegenerationTargets } from '../lib/imageRegeneration'
 import { CopyIcon, DownloadIcon, EditIcon } from './icons'
 
+/** 提供图片复制、下载与编辑菜单，生成结果的编辑进入独立重生成面板。 */
 export default function ImageContextMenu() {
-  const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; outputImageIds: string[]; canCopyImage: boolean; x: number; y: number } | null>(null)
+  const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; sourceTaskId?: string; requestIndex?: number; outputImageIds: string[]; canCopyImage: boolean; x: number; y: number } | null>(null)
   const showToast = useStore((s) => s.showToast)
   const inputImages = useStore((s) => s.inputImages)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
@@ -39,6 +41,8 @@ export default function ImageContextMenu() {
         setMenuInfo({
           src: imgTarget.src,
           imageId: imgTarget.dataset.imageId,
+          sourceTaskId: imgTarget.dataset.sourceTaskId ?? imgTarget.closest<HTMLElement>('[data-task-id]')?.dataset.taskId,
+          requestIndex: imgTarget.dataset.requestIndex != null ? Number(imgTarget.dataset.requestIndex) : undefined,
           outputImageIds: imgTarget.dataset.outputImageIds?.split(',').filter(Boolean) ?? [],
           canCopyImage,
           x: e.clientX,
@@ -172,9 +176,15 @@ export default function ImageContextMenu() {
     }
   }
 
+  /** 已生成图片直接进入独立修改面板，普通图片仍可加入参考图。 */
   const handleEdit = async (e: React.MouseEvent) => {
     e.stopPropagation()
     setMenuInfo(null)
+    const state = useStore.getState()
+    // 参考图可能复用某张输出图的哈希，只有输出区域的显式上下文才进入重生成。
+    const candidates = menuInfo.sourceTaskId ? getImageRegenerationTargets(state.tasks.filter((task) => task.id === menuInfo.sourceTaskId)) : []
+    const generated = candidates.find((target) => target.imageId === menuInfo.imageId && (menuInfo.requestIndex == null || target.requestIndex === menuInfo.requestIndex))
+    if (generated) { openImageRegeneration([generated]); setDetailTaskId(null); return }
     if (inputImages.length >= MAX_INPUT_IMAGES) {
       showToast(`参考图数量已达上限（${MAX_INPUT_IMAGES} 张），无法继续添加`, 'error')
       return

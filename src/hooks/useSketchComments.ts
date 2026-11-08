@@ -1,15 +1,18 @@
 import { useRef, useState } from 'react'
 import { useStore } from '../store'
+import type { ImageComment } from '../types'
 import { createSketchId, type SketchComment } from '../lib/sketch'
 import { getImageComments, upsertImageCommentMention } from '../lib/promptImageMentions'
 
 /**
  * 画板评论：重新编辑参考图时从提示词中该图的评论胶囊恢复，保存时写回胶囊。
- * 坐标均为相对画布宽高的比例，与原图一致。
+ * 坐标相对当前底图宽高，编辑时允许图外坐标；保存时由调用方换算到导出画布。
  * 新增、修改、拖动、删除结束且确有变化时调用 onCommit(变化前的评论)，由画板记入撤销历史。
+ * externalComments 提供时使用独立草稿，禁止写回画廊或 Agent 的提示词。
  */
-export function useSketchComments(replaceImageId: string | undefined, onCommit: (before: SketchComment[]) => void) {
+export function useSketchComments(replaceImageId: string | undefined, onCommit: (before: SketchComment[]) => void, externalComments?: ImageComment[]) {
   const [initialComments] = useState(() => {
+    if (externalComments) return externalComments
     const state = useStore.getState()
     const idx = replaceImageId ? state.inputImages.findIndex((img) => img.id === replaceImageId) : -1
     return idx >= 0 ? getImageComments(state.prompt, idx) : []
@@ -89,11 +92,13 @@ export function useSketchComments(replaceImageId: string | undefined, onCommit: 
 
   /**
    * 把评论写入提示词中第 idx 张参考图的评论胶囊：已有则原地更新，否则插到输入框光标处（有选区时替换选中内容）。
+   * exportedComments 为导出坐标系下的评论；画布扩大后不能沿用旧坐标。
    * merge 为 true 时保留该图原有评论，用于导出结果与已有参考图相同的情况。
    */
-  const saveComments = (idx: number, merge = false) => {
+  const saveComments = (idx: number, merge = false, exportedComments = commentData) => {
+    if (externalComments) return
     const latest = useStore.getState()
-    const next = merge ? [...getImageComments(latest.prompt, idx), ...commentData] : commentData
+    const next = merge ? [...getImageComments(latest.prompt, idx), ...exportedComments] : exportedComments
     const selection = latest.promptSelection?.prompt === latest.prompt ? latest.promptSelection : { start: Infinity, end: Infinity }
     const result = upsertImageCommentMention(latest.prompt, idx, next, selection.start, selection.end)
     latest.setPrompt(result.prompt)

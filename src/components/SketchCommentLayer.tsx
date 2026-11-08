@@ -85,6 +85,7 @@ export default function SketchCommentLayer({
     dragRef.current = { id, startX: event.clientX, startY: event.clientY, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.bottom, moved: false }
   }
 
+  /** 允许评论移到原图外；保存时由画板扩展导出区域并归一化坐标。 */
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
     if (!drag || !event.currentTarget.hasPointerCapture(event.pointerId)) return
@@ -92,7 +93,7 @@ export default function SketchCommentLayer({
     if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return
     drag.moved = true
     const point = toDocPoint({ clientX: event.clientX - drag.offsetX, clientY: event.clientY - drag.offsetY })
-    onMove(drag.id, Math.min(1, Math.max(0, point.x / docSize.width)), Math.min(1, Math.max(0, point.y / docSize.height)))
+    onMove(drag.id, point.x / docSize.width, point.y / docSize.height)
   }
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {

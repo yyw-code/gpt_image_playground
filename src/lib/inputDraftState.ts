@@ -1,4 +1,5 @@
 import type { AgentConversation, AgentInputDraft, AgentRound, AppMode, InputImage, MaskDraft } from '../types'
+import { normalizeSketchLayout } from './sketchLayout'
 import { remapAgentRoundMentionsForPathChange } from './agentConversationState'
 import { remapImageMentionsForOrder } from './promptImageMentions'
 
@@ -23,12 +24,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
+/** 恢复参考图及可选原图区域，非法标注元数据丢弃且不影响旧图片恢复。 */
 function normalizeInputImages(value: unknown): InputImage[] {
   if (!Array.isArray(value)) return []
   return value
     .map((img): InputImage | null => {
       if (!isRecord(img) || typeof img.id !== 'string') return null
-      return { id: img.id, dataUrl: typeof img.dataUrl === 'string' ? img.dataUrl : '' }
+      const sketchLayout = normalizeSketchLayout(img.sketchLayout)
+      return { id: img.id, dataUrl: typeof img.dataUrl === 'string' ? img.dataUrl : '', ...(sketchLayout ? { sketchLayout } : {}) }
     })
     .filter((img): img is InputImage => img != null)
 }

@@ -41,6 +41,13 @@ describe('独立的目标画布比例', () => {
     expect(getImageSubmissionError({ ...normalized, imageAspectRatio: '4:1' }, settings)).toContain('比例')
   })
 
+  it('本站模式的外站原生配置不继承本站像素限制', () => {
+    const profile = createDefaultOpenAIProfile({ baseUrl: 'https://external.example/v1', codexCli: false })
+    expect(usesImageAspectRatio(profile)).toBe(false)
+    expect(getImageRequestParameters({ ...DEFAULT_PARAMS, size: '2048x2048' }, profile).size).toBe('2048x2048')
+    expect(usesImageAspectRatio({ ...profile, codexCli: true })).toBe(true)
+  })
+
   it('外部原生通道和 Grok 不接管 ChatGPT 目标比例', () => {
     mode.IS_SITE_MODE = false
     const profile = createDefaultOpenAIProfile({ codexCli: false })

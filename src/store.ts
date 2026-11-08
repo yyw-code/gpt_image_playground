@@ -14,6 +14,8 @@ import type {
   AppMode,
   TaskParams,
   InputImage,
+  ImageRegenerationDraft,
+  ImageRegenerationTarget,
   MaskDraft,
   SketchBoardRequest,
   TaskRecord,
@@ -55,7 +57,7 @@ import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInpu
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
-import { getImageParameterMode, usesImageAspectRatio } from './lib/imageModels'
+import { getImageOutputIssues, getImageParameterMode, usesImageAspectRatio } from './lib/imageModels'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -64,6 +66,7 @@ import { getImageSubmissionError, getChangedParams, normalizeParamsForSettings }
 import { getGrokImageInputError } from './lib/grokImage'
 import { runWithConcurrency, splitBatchPrompts } from './lib/batchPrompts'
 import { getTaskOutputSlots, mergeRetriedTaskOutputs } from './lib/taskOutputRetry'
+import { buildImageRegenerationJob } from './lib/imageRegeneration'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
 import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteImageCacheEntry, ensureImageCached, scheduleMissingThumbnailBackfill } from './lib/imageCache'
@@ -423,12 +426,17 @@ interface AppState {
   setDetailTaskId: (id: string | null) => void
   lightboxImageId: string | null
   lightboxImageList: string[]
+  /** 输出图预览保留任务及请求位置，避免重复图片哈希指向其他来源。 */
+  lightboxImageTarget: ImageRegenerationTarget | null
   /** 预览参考图时对应的提示词，按图片在列表中的位置取其评论；为空时不显示评论 */
   lightboxCommentPrompt: string | null
-  setLightboxImageId: (id: string | null, list?: string[], commentPrompt?: string | null) => void
+  setLightboxImageId: (id: string | null, list?: string[], commentPrompt?: string | null, target?: ImageRegenerationTarget | null) => void
   /** 画板；baseImageSrc 为画布底图，replaceImageId 为完成后要替换的参考图 */
   sketchBoard: SketchBoardRequest | null
   setSketchBoard: (board: SketchBoardRequest | null) => void
+  /** 独立重生成面板草稿，不持久化，不与底部输入或 Agent 联动。 */
+  imageRegeneration: ImageRegenerationDraft | null
+  setImageRegeneration: (draft: ImageRegenerationDraft | null) => void
   showSettings: boolean
   settingsTabRequest: SettingsTab | null
   setShowSettings: (v: boolean, tab?: SettingsTab) => void
@@ -475,7 +483,9 @@ interface AppState {
   setConfirmDialog: (d: AppState['confirmDialog']) => void
 }
 
+/** 检查任务、输入及独立编辑草稿的图片引用，防止清理仍被使用的本地图片。 */
 function isImageReferencedByState(state: AppState, imageId: string) {
+  if (state.imageRegeneration?.annotation?.image.id === imageId || state.imageRegeneration?.targets.some((target) => target.imageId === imageId)) return true
   if (state.inputImages.some((img) => img.id === imageId)) return true
   if (state.galleryInputDraft?.inputImages.some((img) => img.id === imageId)) return true
   if (Object.values(state.agentInputDrafts).some((draft) => draft.inputImages.some((img) => img.id === imageId))) return true
@@ -1017,13 +1027,16 @@ export const useStore = create<AppState>()(
       },
       lightboxImageId: null,
       lightboxImageList: [],
+      lightboxImageTarget: null,
       lightboxCommentPrompt: null,
-      setLightboxImageId: (lightboxImageId, list, commentPrompt = null) => {
+      /** 设置预览及可选输出槽位；旧调用仍按图片列表工作，关闭时清除来源上下文。 */
+      setLightboxImageId: (lightboxImageId, list, commentPrompt = null, target = null) => {
         if (lightboxImageId) dismissAllTooltips()
         set({
           lightboxImageId,
           lightboxImageList: list ?? (lightboxImageId ? [lightboxImageId] : []),
           lightboxCommentPrompt: lightboxImageId ? commentPrompt : null,
+          lightboxImageTarget: lightboxImageId && target?.imageId === lightboxImageId ? target : null,
         })
       },
       sketchBoard: null,
@@ -1031,6 +1044,9 @@ export const useStore = create<AppState>()(
         if (sketchBoard) dismissAllTooltips()
         set({ sketchBoard })
       },
+      imageRegeneration: null,
+      /** 更新独立重生成草稿；关闭时不清空其他工作区的输入内容。 */
+      setImageRegeneration: (imageRegeneration) => set({ imageRegeneration }),
       showSettings: false,
       settingsTabRequest: null,
       /** 从当前工作区打开对应配置页，显式指定的页签优先。 */
@@ -4337,6 +4353,116 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
   }
 
   executeTask(taskId, retryIndices)
+}
+
+let regenerationSubmitting = false
+
+/** 打开两种操作共用的独立面板，修改仅用本次要求，重生成追加可选要求；不改原图及其他草稿。 */
+export function openImageRegeneration(targets: ImageRegenerationTarget[], mode: ImageRegenerationDraft['mode'] = 'edit') {
+  const state = useStore.getState()
+  if (!targets.length) { state.showToast('请选择已生成的图片', 'error'); return }
+  const source = state.tasks.find((task) => task.id === targets[0].taskId)
+  if (!source) { state.showToast('来源任务已不存在', 'error'); return }
+  state.setImageRegeneration({
+    targets, mode, prompt: '', promptMode: mode === 'rerun' ? 'append' : 'replace', count: 1,
+    ...(targets.length === 1 ? { params: { ...source.params, n: 1 } } : {}),
+  })
+  state.setLightboxImageId(null)
+}
+
+/** 校验整批来源与配置后复用现有持久化、请求执行及批量队列；不清空任何输入草稿，不覆盖历史图。 */
+export async function submitImageRegeneration(draft: ImageRegenerationDraft): Promise<string[]> {
+  if (regenerationSubmitting) throw new Error('重生成提交中，请勿重复提交')
+  regenerationSubmitting = true
+  let batchId = 0
+  try {
+    const state = useStore.getState()
+    if (state.batchProgress) throw new Error('已有批量任务进行中，请完成或停止后再提交')
+    if (!draft.targets.length) throw new Error('请选择来源图片')
+    if (new Set(draft.targets.map((target) => `${target.taskId}:${target.requestIndex}`)).size !== draft.targets.length) throw new Error('请勿重复选择同一来源图片')
+    const settings = normalizeSettings(state.settings)
+    const jobs = draft.targets.map((target) => {
+      const source = state.tasks.find((task) => task.id === target.taskId)
+      if (!source) throw new Error('来源任务已不存在，请重新选择')
+      const job = buildImageRegenerationJob(source, target, draft)
+      const selected = draft.profile ? (draft.profile.scope === 'agent' ? settings.agentProfiles : settings.profiles).find((profile) => profile.id === draft.profile!.id) : null
+      const profileSource = selected && draft.profile ? { ...source, apiProfileId: selected.id, apiConfigScope: draft.profile.scope, apiModel: draft.profile.model, apiMode: selected.apiMode, apiImageModel: selected.apiMode === 'responses' ? selected.imageGenerationModel?.trim() ?? '' : undefined } : source
+      const profile = draft.profile && !selected ? null : getTaskApiProfile(settings, profileSource, true)
+      if (!profile) throw new Error('原配置或模型已不可用，请在面板主动选择可用配置和模型')
+      const profileError = validateApiProfile(profile)
+      if (profileError) throw new Error(`请完善配置：${profileError}`)
+      // 批量沿用参数也须逐图检查；不能仅依赖当前预览图的控件禁用态。
+      const outputError = Object.values(getImageOutputIssues(job.params, profile))[0]
+      if (outputError) throw new Error(outputError)
+      const requestSettings = createSettingsForApiProfile(settings, profile)
+      const parameterError = getImageSubmissionError(job.params, requestSettings, draft.targets.length)
+      if (parameterError) throw new Error(parameterError)
+      const inputError = getGrokImageInputError(profile, job.inputImageIds.length, Boolean(job.maskImageId))
+      if (inputError) throw new Error(inputError)
+      return { source, target, job, profile, requestSettings, scope: draft.profile?.scope ?? getTaskApiConfigScope(source) }
+    })
+    // 所有图片在发送前检查可读性，避免半批已经计费才发现后半批参考图丢失。
+    for (const entry of jobs) {
+      for (const imageId of [...entry.job.inputImageIds, ...(entry.job.maskImageId ? [entry.job.maskImageId] : [])]) {
+        if (draft.annotation?.image.id === imageId) continue
+        if (!await ensureImageCached(imageId)) throw new Error('来源参考图或遮罩已不存在，请重新选择')
+      }
+    }
+    if (draft.annotation) {
+      const id = await storeImage(draft.annotation.image.dataUrl, 'upload')
+      cacheImage(id, draft.annotation.image.dataUrl)
+      for (const entry of jobs) entry.job.inputImageIds = [id]
+    }
+    const groupId = genId()
+    const ids: string[] = []
+    /** 持久化成功后才进入既有发送入口；创建期间来源删除则中止，避免发送已失效的选择。 */
+    const startTask = async (index: string) => {
+      const entry = jobs[Number(index)]
+      const latestSource = useStore.getState().tasks.find((task) => task.id === entry.source.id)
+      if (!latestSource) throw new Error('来源任务已被删除，停止提交')
+      buildImageRegenerationJob(latestSource, entry.target, draft)
+      const normalizedParams = normalizeParamsForSettings(entry.job.params, entry.requestSettings, { hasInputImages: entry.job.inputImageIds.length > 0 })
+      const params = normalizedParams.transparent_output ? getTransparentRequestParams(normalizedParams) : normalizedParams
+      const transparentMeta = params.transparent_output && entry.profile.transparentBackgroundMethod === 'local' ? createTransparentOutputMeta(entry.job.prompt) : null
+      const createdAt = Date.now()
+      const task: TaskRecord = {
+        ...entry.job, params,
+        id: genId(), regeneration: { ...entry.target, mode: draft.mode, groupId },
+        apiProvider: entry.profile.provider, apiProfileId: entry.profile.id, apiConfigScope: entry.scope,
+        apiProfileName: entry.profile.name, apiMode: entry.profile.apiMode, apiModel: entry.profile.model,
+        apiImageModel: entry.profile.apiMode === 'responses' ? entry.profile.imageGenerationModel?.trim() ?? '' : undefined,
+        imageParameterMode: getImageParameterMode(entry.profile),
+        transparentOutput: transparentMeta?.transparentOutput, transparentPrompt: transparentMeta?.effectivePrompt,
+        outputImages: [], status: 'running', error: null, createdAt, startedAt: createdAt, finishedAt: null, elapsed: null,
+      }
+      await putTask(task)
+      if (!useStore.getState().tasks.some((item) => item.id === entry.source.id)) {
+        await dbDeleteTask(task.id)
+        throw new Error('来源任务已被删除，停止提交')
+      }
+      useStore.getState().setTasks([task, ...useStore.getState().tasks])
+      ids.push(task.id)
+      if (batchId) batchTaskIds.add(task.id)
+      void executeTask(task.id)
+      return task.id
+    }
+    if (jobs.length === 1) await startTask('0')
+    else {
+      batchId = beginBatch(jobs.length)
+      const limit = settings.batchPromptMode === 'queue' ? 1 : settings.batchPromptConcurrencyLimited ? settings.batchPromptConcurrency : jobs.length
+      let startError: unknown
+      await runBatchPrompts(batchId, jobs.map((_, index) => String(index)), limit, async (index) => {
+        try { return await startTask(index) }
+        catch (err) { startError = err; throw err }
+      })
+      // 一张也未保存时保留面板草稿；已有结果则沿用队列的逐项失败提示，避免重复请求成功项。
+      if (!ids.length && startError) throw startError
+    }
+    return ids
+  } finally {
+    if (batchId) endBatch(batchId)
+    regenerationSubmitting = false
+  }
 }
 
 /** 复用任务参数与可用配置；站点模式不临时启用外站历史连接，也不迁移其密钥。 */

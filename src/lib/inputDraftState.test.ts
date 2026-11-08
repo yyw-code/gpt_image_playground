@@ -284,3 +284,12 @@ describe('input draft persistence transforms', () => {
     })
   })
 })
+
+
+it('标注参考图恢复原图区域，非法元数据丢弃，旧格式保持兼容', () => {
+  const sketchLayout = { width: 1200, height: 1800, imageBounds: { x: 100, y: 100, width: 900, height: 1500 } }
+  const restored = normalizeAgentInputDraft({ inputImages: [{ id: 'valid', dataUrl: 'data:', sketchLayout }, { id: 'invalid', sketchLayout: { width: -1 } }, { id: 'legacy', dataUrl: '' }] })
+  expect(restored.inputImages[0].sketchLayout).toEqual(sketchLayout)
+  expect(restored.inputImages[1].sketchLayout).toBeUndefined()
+  expect(restored.inputImages[2]).toEqual({ id: 'legacy', dataUrl: '' })
+})

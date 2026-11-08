@@ -24,6 +24,7 @@ import DataProgressDialog from './components/DataProgressDialog'
 import Toast from './components/Toast'
 import DbBlockedNotice from './components/DbBlockedNotice'
 import MaskEditorModal from './components/MaskEditorModal'
+import ImageRegenerationModal from './components/ImageRegenerationModal'
 import SketchBoardModal from './components/SketchBoardModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
@@ -227,6 +228,7 @@ export default function App() {
       <Toast />
       <DbBlockedNotice />
       <MaskEditorModal />
+      <ImageRegenerationModal />
       <SketchBoardModal />
       <ImageContextMenu />
     </>

@@ -119,10 +119,10 @@ export function getImageParameterMode(profile: ApiProfile): NonNullable<TaskReco
   return capabilities.nativeOutput || profile.provider === 'grok' ? 'native' : 'default'
 }
 
-/** 本站已识别的 ChatGPT 模型及兼容通道使用目标比例；不依据密钥或域名猜测上游身份。 */
+/** CLI 与本站已识别模型使用目标比例；本站限制只作用于部署维护的本站连接，不扩散至外站原生通道。 */
 export function usesImageAspectRatio(profile: ApiProfile): boolean {
   if (profile.provider === 'grok' || profile.provider === 'fal') return false
-  return profile.codexCli || IS_SITE_MODE && profile.provider === 'openai' && getImageParameterCapabilities(profile).sizeMode !== 'auto'
+  return profile.codexCli || IS_SITE_MODE && profile.provider === 'openai' && isSiteApiProfile(profile) && getImageParameterCapabilities(profile).sizeMode !== 'auto'
 }
 
 /** 只组装当前通道支持的字段；本站无效参数抛错，画廊和 Agent 均不得静默降级或绕过限制。 */

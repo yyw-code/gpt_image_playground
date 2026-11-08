@@ -1,12 +1,14 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import type { ImageComment } from '../types'
-import { createInputImageFromFile, deleteImageIfUnreferenced, useStore } from '../store'
+import type { ImageComment, ImageRegenerationTarget } from '../types'
+import { createInputImageFromFile, deleteImageIfUnreferenced, openImageRegeneration, useStore } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { getImageComments } from '../lib/promptImageMentions'
+import { getImageRegenerationTargets } from '../lib/imageRegeneration'
+import { getTaskOutputSlots } from '../lib/taskOutputRetry'
 import { CommentPin } from './CommentMarks'
 import { EditIcon, RefreshIcon } from './icons'
 
@@ -23,9 +25,11 @@ function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v))
 }
 
+/** 展示原图并提供独立修改入口，参考图继续使用原替换和画板行为。 */
 export default function Lightbox() {
   const lightboxImageId = useStore((s) => s.lightboxImageId)
   const lightboxImageList = useStore((s) => s.lightboxImageList)
+  const lightboxImageTarget = useStore((s) => s.lightboxImageTarget)
   const setLightboxImageId = useStore((s) => s.setLightboxImageId)
   const maskDraft = useStore((s) => s.maskDraft)
   const tasks = useStore((s) => s.tasks)
@@ -133,20 +137,25 @@ export default function Lightbox() {
   }, [src, maskImageSrc])
 
   // 导航
-  const currentIndex = lightboxImageId ? lightboxImageList.indexOf(lightboxImageId) : -1
+  const lightboxTask = lightboxImageTarget ? tasks.find((task) => task.id === lightboxImageTarget.taskId) : null
+  const outputSlots = lightboxTask ? getTaskOutputSlots(lightboxTask).filter((slot) => slot.imageId) : []
+  const targetIndex = outputSlots.findIndex((slot) => slot.requestIndex === lightboxImageTarget?.requestIndex && slot.imageId === lightboxImageId)
+  const currentIndex = targetIndex >= 0 ? targetIndex : lightboxImageId ? lightboxImageList.indexOf(lightboxImageId) : -1
   const total = lightboxImageList.length
   const showNav = total > 1
 
   const goTo = useCallback((idx: number) => {
     if (lightboxImageList.length === 0) return
     const wrapped = ((idx % lightboxImageList.length) + lightboxImageList.length) % lightboxImageList.length
-    setLightboxImageId(lightboxImageList[wrapped], lightboxImageList, lightboxCommentPrompt)
-  }, [lightboxCommentPrompt, lightboxImageList, setLightboxImageId])
+    const slot = outputSlots[wrapped]
+    const target = slot && lightboxImageTarget ? { taskId: lightboxImageTarget.taskId, requestIndex: slot.requestIndex, imageId: slot.imageId } : null
+    setLightboxImageId(lightboxImageList[wrapped], lightboxImageList, lightboxCommentPrompt, target)
+  }, [lightboxCommentPrompt, lightboxImageList, lightboxImageTarget, outputSlots, setLightboxImageId])
 
   const goPrev = useCallback(() => { if (showNav) goTo(currentIndex - 1) }, [showNav, currentIndex, goTo])
   const goNext = useCallback(() => { if (showNav) goTo(currentIndex + 1) }, [showNav, currentIndex, goTo])
 
-  const isInputImage = Boolean(lightboxImageId && inputImages.some((image) => image.id === lightboxImageId))
+  const isInputImage = Boolean(!lightboxImageTarget && lightboxImageId && inputImages.some((image) => image.id === lightboxImageId))
 
   const openReplaceFilePicker = useCallback(() => {
     if (!lightboxImageId || !isInputImage) return
@@ -285,6 +294,13 @@ export default function Lightbox() {
         onPrev={goPrev}
         onNext={goNext}
         showInputActions={isInputImage}
+        regenerationTarget={lightboxImageTarget ?? undefined}
+        onRegenerate={!isInputImage && getImageRegenerationTargets(tasks).some((target) => target.imageId === lightboxImageId) ? (mode) => {
+          const state = useStore.getState()
+          const ordered = [...state.tasks].sort((a, b) => Number(b.id === state.detailTaskId) - Number(a.id === state.detailTaskId))
+          const target = lightboxImageTarget ?? getImageRegenerationTargets(ordered).find((item) => item.imageId === lightboxImageId)
+          if (target) { openImageRegeneration([target], mode); state.setDetailTaskId(null) }
+        } : undefined}
         onReplace={openReplaceFilePicker}
         onEdit={editInputImage}
       />
@@ -310,13 +326,15 @@ interface LightboxInnerProps {
   total: number
   onPrev: () => void
   onNext: () => void
+  onRegenerate?: (mode: 'edit' | 'rerun') => void
+  regenerationTarget?: ImageRegenerationTarget
   showInputActions: boolean
   onReplace: () => void
   onEdit: () => void
 }
 
-/** 内部组件：保证挂载时 DOM 已经存在，所有 ref / effect 都可靠 */
-function LightboxInner({ src, comments, imageId, maskPreviewSrc, onClose, showNav, currentIndex, total, onPrev, onNext, showInputActions, onReplace, onEdit }: LightboxInnerProps) {
+/** 展示可缩放原图；生成结果提供修改和重跑入口，参考图保留替换及画板操作。 */
+function LightboxInner({ src, comments, imageId, maskPreviewSrc, onClose, showNav, currentIndex, total, onPrev, onNext, onRegenerate, regenerationTarget, showInputActions, onReplace, onEdit }: LightboxInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const openedAtRef = useRef(Date.now())
 
@@ -782,6 +800,8 @@ function LightboxInner({ src, comments, imageId, maskPreviewSrc, onClose, showNa
           <img
             src={src}
             data-image-id={imageId}
+            data-source-task-id={regenerationTarget?.taskId}
+            data-request-index={regenerationTarget?.requestIndex}
             className="saveable-image max-w-[90vw] max-h-[70vh] sm:max-w-[85vw] sm:max-h-[75vh] object-contain rounded-lg shadow-2xl"
             onDragStart={(e) => e.preventDefault()}
             alt=""
@@ -853,6 +873,7 @@ function LightboxInner({ src, comments, imageId, maskPreviewSrc, onClose, showNa
         </>
       )}
 
+      {onRegenerate && !isZoomed && <div className="absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 gap-2 rounded-2xl bg-white/90 p-2 text-sm shadow-xl dark:bg-black/70" onClick={(event) => event.stopPropagation()}><button className="whitespace-nowrap rounded-xl bg-green-50 px-4 py-2 text-green-600" onClick={() => onRegenerate('edit')}>修改这张</button><button className="whitespace-nowrap rounded-xl bg-blue-50 px-4 py-2 text-blue-600" onClick={() => onRegenerate('rerun')}>重新生成</button></div>}
       {/* 参考图操作 */}
       {showInputActions && !isZoomed && (
         <div className="absolute bottom-8 left-1/2 z-10 flex w-max -translate-x-1/2 items-center gap-2 rounded-2xl bg-white/90 dark:bg-black/60 p-2 backdrop-blur-xl border border-gray-200/80 dark:border-white/15 shadow-2xl transition-colors" onClick={(e) => e.stopPropagation()}>

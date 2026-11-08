@@ -127,6 +127,10 @@ export type FontMode = 'default' | 'builtin' | 'system' | 'custom'
 export interface SketchBoardRequest {
   baseImageSrc: string | null
   replaceImageId?: string
+  /** 独立编辑器的评论与保存回调；提供时只回传结果，不读写底部输入草稿。 */
+  comments?: ImageComment[]
+  layout?: SketchAnnotationLayout
+  onConfirm?: (dataUrl: string, comments: ImageComment[], layout?: SketchAnnotationLayout) => void | Promise<void>
 }
 
 /** 正在进行的批量提交进度 */
@@ -232,6 +236,15 @@ export interface InputImage {
   id: string
   /** data URL，用于预览 */
   dataUrl: string
+  /** 画板导出时保留原图区域；旧参考图无此字段。 */
+  sketchLayout?: SketchAnnotationLayout
+}
+
+/** 标注参考图的导出尺寸与原图所在矩形，用于重开定位和区分图外说明。 */
+export interface SketchAnnotationLayout {
+  width: number
+  height: number
+  imageBounds: { x: number; y: number; width: number; height: number }
 }
 
 /** 参考图上的评论标注，x / y 为相对原图宽高的比例（0~1） */
@@ -245,6 +258,26 @@ export interface MaskDraft {
   targetImageId: string
   maskDataUrl: string
   updatedAt: number
+}
+
+/** 源图使用请求槽位和图片 ID 双重定位，相同哈希图片仍可分别编辑。 */
+export interface ImageRegenerationTarget {
+  taskId: string
+  requestIndex: number
+  imageId: string
+}
+
+/** 独立重生成草稿；只保存在内存，不包含密钥，不覆盖画廊或 Agent 输入。 */
+export interface ImageRegenerationDraft {
+  targets: ImageRegenerationTarget[]
+  mode: 'edit' | 'rerun'
+  prompt: string
+  promptMode: 'original' | 'append' | 'replace'
+  count: number
+  /** 不提供时按各自来源配置、模型和参数提交。 */
+  profile?: { id: string; scope: AppMode; model: string }
+  params?: TaskParams
+  annotation?: { image: InputImage; comments: ImageComment[]; layout?: SketchAnnotationLayout }
 }
 
 export interface AgentInputDraft {
@@ -261,6 +294,8 @@ export type TaskStatus = 'running' | 'done' | 'error'
 
 export interface TaskRecord {
   id: string
+  /** 新版本来源及本次分组；旧记录缺省，每个版本仍独立保存完整生成快照。 */
+  regeneration?: ImageRegenerationTarget & { mode: 'edit' | 'rerun'; groupId: string }
   prompt: string
   params: TaskParams
   /** 生成时使用的 Provider 类型 */

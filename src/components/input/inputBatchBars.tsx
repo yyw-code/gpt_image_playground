@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 
 import type { TaskRecord } from '../../types'
+import { openImageRegeneration } from '../../store'
+import { getImageRegenerationTargets } from '../../lib/imageRegeneration'
 import { useTooltip } from '../../hooks/useTooltip'
 import ViewportTooltip from '../ViewportTooltip'
 
@@ -37,6 +39,7 @@ function BatchActionButton({
   )
 }
 
+/** 展示任务或收藏夹批量操作；重生成只选择成功图片，不改动底部草稿。 */
 export default function InputBatchBars({
   showFavoriteCollectionBatchBar,
   showTaskBatchBar,
@@ -165,6 +168,7 @@ export default function InputBatchBars({
           </svg>
         </BatchActionButton>
         <div className="w-px h-5 bg-gray-200 dark:bg-white/20 mx-1"></div>
+        <BatchActionButton onClick={() => openImageRegeneration(getImageRegenerationTargets(tasks.filter((task) => selectedTaskIds.includes(task.id))))} className="px-3 py-2 text-sm text-blue-500" tooltip="批量重新生成">重新生成</BatchActionButton>
         <BatchActionButton
           onClick={onToggleFavorite}
           className="p-2 text-yellow-500 dark:text-yellow-400 hover:text-yellow-600 dark:hover:text-yellow-300 transition-colors"

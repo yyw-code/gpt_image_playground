@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { getTaskOutputSlots, getTaskOutputSlotLabel } from '../lib/taskOutputRetry'
+import { getImageRegenerationTargets, getImageVersions } from '../lib/imageRegeneration'
 import { getTaskGenerationLabel } from '../lib/taskProgress'
-import { useStore, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
+import { useStore, reuseConfig, openImageRegeneration, removeTask, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
@@ -37,6 +38,7 @@ export default function DetailModal() {
   const streamPreviewSlots = useStore((s) => detailTaskId ? s.streamPreviewSlots[detailTaskId] : undefined)
 
   const [imageIndex, setImageIndex] = useState(0)
+  const versionSelectionRef = useRef<{ taskId: string; index: number } | null>(null)
   const [imageSrcs, setImageSrcs] = useState<Record<string, string>>({})
   const [outputPreviewSrcs, setOutputPreviewSrcs] = useState<Record<string, string>>({})
   const [imageRatios, setImageRatios] = useState<Record<string, string>>({})
@@ -108,9 +110,10 @@ export default function DetailModal() {
   useCloseOnEscape(Boolean(task), () => setDetailTaskId(null))
   usePreventBackgroundScroll(Boolean(task), [modalRef, rawUrlsModalRef, rawResponseModalRef])
 
-  // Reset index when task changes
+  // 版本切换保留指定候选位置；普通打开仍从首图开始。
   useEffect(() => {
-    setImageIndex(0)
+    setImageIndex(versionSelectionRef.current?.taskId === detailTaskId ? versionSelectionRef.current.index : 0)
+    versionSelectionRef.current = null
   }, [detailTaskId])
 
   useEffect(() => {
@@ -291,8 +294,10 @@ export default function DetailModal() {
     setDetailTaskId(null)
   }
 
+  /** 只编辑当前成功图片，独立面板不改写底部输入。 */
   const handleEdit = () => {
-    editOutputs(task)
+    if (!currentOutputImageId) return
+    openImageRegeneration([{ taskId: task.id, requestIndex: currentOutputSlot.requestIndex, imageId: currentOutputImageId }])
     setDetailTaskId(null)
   }
 
@@ -511,6 +516,8 @@ export default function DetailModal() {
               <img
                 src={currentOutputPreviewSrc}
                 data-image-id={currentOutputImageId}
+                data-source-task-id={task.id}
+                data-request-index={currentOutputSlot.requestIndex}
                 className="saveable-image max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] object-contain cursor-pointer"
                 onLoad={(e) => {
                   const image = e.currentTarget
@@ -526,7 +533,7 @@ export default function DetailModal() {
                   }
                 }}
                 onClick={() =>
-                  setLightboxImageId(currentOutputImageId, task.outputImages)
+                  setLightboxImageId(currentOutputImageId, task.outputImages, null, { taskId: task.id, requestIndex: currentOutputSlot.requestIndex, imageId: currentOutputImageId })
                 }
                 alt=""
               />
@@ -1122,6 +1129,19 @@ export default function DetailModal() {
             </div>
           </div>
 
+          <section aria-label="图片版本" className="mb-4 border-t border-gray-100 pt-3 dark:border-white/[0.08]">
+            <p className="mb-2 text-xs text-gray-500">图片版本 · 原图与新图均保留</p>
+            <div className="flex flex-wrap gap-2">{getImageVersions(tasks, task.id, currentOutputSlot?.requestIndex ?? 0).map(({ task: version, slot }, index) => <button key={`${version.id}:${slot.requestIndex}`} aria-pressed={version.id === task.id && slot.requestIndex === currentOutputSlot?.requestIndex} className="rounded-lg bg-gray-100 px-3 py-2 text-xs text-gray-600 aria-pressed:bg-blue-50 aria-pressed:text-blue-600 dark:bg-white/[0.06] dark:text-gray-300" onClick={() => {
+              const nextIndex = getTaskOutputSlots(version).findIndex((item) => item.requestIndex === slot.requestIndex)
+              if (version.id === task.id) setImageIndex(Math.max(0, nextIndex))
+              else { versionSelectionRef.current = { taskId: version.id, index: Math.max(0, nextIndex) }; setDetailTaskId(version.id) }
+            }}>{index === 0 ? '原图' : `版本 ${index + 1}`} · {slot.imageId ? '已完成' : version.status === 'running' ? '生成中' : '失败'}</button>)}</div>
+            <div className="mt-3 flex flex-wrap gap-3 text-xs text-blue-500">
+              <button disabled={!currentOutputImageId} className="disabled:opacity-40" onClick={() => { if (currentOutputImageId) { openImageRegeneration([{ taskId: task.id, requestIndex: currentOutputSlot.requestIndex, imageId: currentOutputImageId }], 'rerun'); setDetailTaskId(null) } }}>按原提示词重生成这张</button>
+              {getImageRegenerationTargets([task]).length > 1 && <button onClick={() => { openImageRegeneration(getImageRegenerationTargets([task])); setDetailTaskId(null) }}>批量重新生成…</button>}
+            </div>
+          </section>
+
           {/* 操作按钮 */}
           <div className="grid grid-cols-4 sm:flex gap-2 pt-4 border-t border-gray-100 dark:border-white/[0.08]">
             <button
@@ -1135,11 +1155,11 @@ export default function DetailModal() {
             </button>
             <button
               onClick={handleEdit}
-              disabled={!outputLen}
+              disabled={!currentOutputImageId}
               className="col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-green-50 dark:bg-green-500/10 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap"
             >
               <EditIcon className="w-4 h-4 flex-shrink-0" />
-              编辑输出
+              修改这张
             </button>
             <button
               onClick={handleDelete}

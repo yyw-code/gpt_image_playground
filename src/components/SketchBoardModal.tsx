@@ -45,6 +45,7 @@ import {
   type SketchTextElement,
   type SketchTool,
 } from '../lib/sketch'
+import { getSketchExportBounds, getSketchWorkspace, remapSketchComments, getSketchAnnotationInstruction } from '../lib/sketchLayout'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { useEditorViewport } from '../hooks/useEditorViewport'
 import { useSketchComments } from '../hooks/useSketchComments'
@@ -146,13 +147,15 @@ function ShapeIcon({ shape }: { shape: SketchShapeKind }) {
   )
 }
 
+/** 根据调用入口打开画板；独立面板通过回调接收结果，原参考图入口保持既有行为。 */
 export default function SketchBoardModal() {
   const board = useStore((s) => s.sketchBoard)
   if (!board) return null
-  return <SketchBoardEditor baseImageSrc={board.baseImageSrc} replaceImageId={board.replaceImageId} />
+  return <SketchBoardEditor {...board} />
 }
 
-function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest) {
+/** 在铺满作画区的固定背景上编辑底图、笔迹和评论；onConfirm 存在时只回传结果，不修改全局输入。 */
+function SketchBoardEditor({ baseImageSrc, replaceImageId, comments: externalComments, layout, onConfirm }: SketchBoardRequest) {
   const setSketchBoard = useStore((s) => s.setSketchBoard)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const showToast = useStore((s) => s.showToast)
@@ -185,6 +188,9 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
   const paperColor = isDark ? '#232326' : '#ffffff'
 
   const [docSize, setDocSize] = useState(() => baseImageSrc ? null : getSketchCanvasSize(useStore.getState().params.size))
+  // 参考图入口从已有草稿恢复区域元数据，旧图片默认整张都是原图。
+  const [initialLayout] = useState(() => layout ?? useStore.getState().inputImages.find((img) => img.id === replaceImageId)?.sketchLayout)
+  const [imageBounds, setImageBounds] = useState<SketchBounds | null>(null)
   const [baseImage, setBaseImage] = useState<HTMLImageElement | null>(null)
   const [elements, setElements] = useState<SketchElement[]>([])
   const [draft, setDraft] = useState<SketchElement | null>(null)
@@ -217,13 +223,22 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     finishMove,
     restoreComments,
     saveComments,
-  } = useSketchComments(replaceImageId, (before) => pushHistory(elements, before))
+  } = useSketchComments(replaceImageId, (before) => pushHistory(elements, before), onConfirm ? externalComments ?? [] : undefined)
 
   const viewport = useEditorViewport(frameRef, viewRef, Boolean(docSize))
   const customColorTooltip = useTooltip()
   editingRef.current = editingText
+  const workspace = docSize ? getSketchWorkspace(docSize, Boolean(baseImageSrc)) : null
+  // 文档坐标不随留白或导出范围改变；视口和画布只平移坐标原点。
+  const sceneItems = [...elements.filter((el) => el.id !== editingText?.id), ...(draft ? [draft] : []), ...(editingText ? [editingText] : [])]
+  const contentBounds = docSize ? getSketchExportBounds(docSize, sceneItems, measureCtx, commentData) : null
+  const renderBounds = workspace && contentBounds ? {
+    x: Math.min(workspace.x, contentBounds.x), y: Math.min(workspace.y, contentBounds.y),
+    width: Math.max(workspace.x + workspace.width, contentBounds.x + contentBounds.width) - Math.min(workspace.x, contentBounds.x),
+    height: Math.max(workspace.y + workspace.height, contentBounds.y + contentBounds.height) - Math.min(workspace.y, contentBounds.y),
+  } : null
   // 布局像素与文档像素之比（未含缩放）
-  const cssScale = docSize ? viewport.frameWidth / docSize.width : 0
+  const cssScale = workspace ? viewport.frameWidth / workspace.width : 0
   // 屏幕像素与文档像素的换算比例，包含缩放
   const viewScale = cssScale * viewport.transform.scale
   const isReady = Boolean(docSize)
@@ -271,7 +286,13 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
         if (cancelled) return
         const scale = SKETCH_LONG_EDGE / Math.max(image.naturalWidth, image.naturalHeight)
         setBaseImage(image)
-        setDocSize({ width: Math.round(image.naturalWidth * scale), height: Math.round(image.naturalHeight * scale) })
+        const width = Math.round(image.naturalWidth * scale)
+        const height = Math.round(image.naturalHeight * scale)
+        const scaleX = width / image.naturalWidth
+        const scaleY = height / image.naturalHeight
+        const restoredBounds = getSketchAnnotationInstruction(initialLayout) ? initialLayout!.imageBounds : { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight }
+        setImageBounds({ x: restoredBounds.x * scaleX, y: restoredBounds.y * scaleY, width: restoredBounds.width * scaleX, height: restoredBounds.height * scaleY })
+        setDocSize({ width, height })
       })
       .catch((err) => {
         if (cancelled) return
@@ -293,21 +314,24 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     return () => document.removeEventListener('pointerdown', closeMenu, true)
   }, [showShapeMenu])
 
-  function drawScene(ctx: CanvasRenderingContext2D, items: SketchElement[], erase?: SketchEraseStroke | null) {
-    const size = docSize!
-    if (inkCanvas.width !== size.width || inkCanvas.height !== size.height) {
-      inkCanvas.width = size.width
-      inkCanvas.height = size.height
+  /** 使用统一文档坐标绘制视口或导出区域；扩大的画布不会拉伸底图，橡皮只影响笔迹层。 */
+  function drawScene(ctx: CanvasRenderingContext2D, items: SketchElement[], erase?: SketchEraseStroke | null, bounds = renderBounds!) {
+    if (inkCanvas.width !== bounds.width || inkCanvas.height !== bounds.height) {
+      inkCanvas.width = bounds.width
+      inkCanvas.height = bounds.height
     }
     const inkCtx = inkCanvas.getContext('2d')!
-    inkCtx.clearRect(0, 0, size.width, size.height)
+    inkCtx.clearRect(0, 0, bounds.width, bounds.height)
+    inkCtx.save()
+    inkCtx.translate(-bounds.x, -bounds.y)
     for (const el of items) drawSketchElementWithErase(inkCtx, el, scratchCanvas)
     if (erase) drawEraseStroke(inkCtx, erase)
+    inkCtx.restore()
 
-    ctx.clearRect(0, 0, size.width, size.height)
+    ctx.clearRect(0, 0, bounds.width, bounds.height)
     ctx.fillStyle = paperColor
-    ctx.fillRect(0, 0, size.width, size.height)
-    if (baseImage) ctx.drawImage(baseImage, 0, 0, size.width, size.height)
+    ctx.fillRect(0, 0, bounds.width, bounds.height)
+    if (baseImage) ctx.drawImage(baseImage, -bounds.x, -bounds.y, docSize!.width, docSize!.height)
     ctx.drawImage(inkCanvas, 0, 0)
   }
 
@@ -331,18 +355,19 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     const ctx = canvasRef.current!.getContext('2d')!
     const visible = elements.filter((el) => el.id !== editingText?.id)
     drawScene(ctx, draft ? [...visible, draft] : visible, liveErase)
-  }, [elements, draft, liveErase, editingText, baseImage, docSize])
+  }, [elements, draft, liveErase, editingText, baseImage, docSize, renderBounds?.x, renderBounds?.y, renderBounds?.width, renderBounds?.height])
 
   // 选中框单独画在叠加层上，缩放时只需重绘这一层
   useEffect(() => {
     if (!docSize) return
     const ctx = overlayRef.current!.getContext('2d')!
-    ctx.clearRect(0, 0, docSize.width, docSize.height)
+    ctx.clearRect(0, 0, renderBounds!.width, renderBounds!.height)
     if (!selected || editingText) return
 
     const unit = 1 / viewScale
     const size = 9 * unit
     ctx.save()
+    ctx.translate(-renderBounds!.x, -renderBounds!.y)
     ctx.strokeStyle = '#3b82f6'
     ctx.fillStyle = '#ffffff'
     ctx.lineWidth = 1.5 * unit
@@ -366,7 +391,7 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
       ctx.strokeRect(p.x - size / 2, p.y - size / 2, size, size)
     }
     ctx.restore()
-  }, [selected, editingText, viewScale, docSize])
+  }, [selected, editingText, viewScale, docSize, renderBounds?.x, renderBounds?.y, renderBounds?.width, renderBounds?.height])
 
   function syncHistory() {
     setHistoryVersion((v) => v + 1)
@@ -441,11 +466,12 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [elements, comments, selectedId, isSaving])
 
+  /** 将指针映射回稳定文档坐标，支持原图四周和负坐标区域。 */
   function toDocPoint(event: { clientX: number; clientY: number }): SketchPoint {
     const rect = canvasRef.current!.getBoundingClientRect()
     return {
-      x: ((event.clientX - rect.left) / rect.width) * docSize!.width,
-      y: ((event.clientY - rect.top) / rect.height) * docSize!.height,
+      x: ((event.clientX - rect.left) / rect.width) * renderBounds!.width + renderBounds!.x,
+      y: ((event.clientY - rect.top) / rect.height) * renderBounds!.height + renderBounds!.y,
     }
   }
 
@@ -543,7 +569,6 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     const tolerance = 6 / viewScale
 
     if (tool === 'text') {
-      if (point.x < 0 || point.y < 0 || point.x > docSize.width || point.y > docSize.height) return
       const hit = findTopElementAt(elements.filter((el) => el.type === 'text'), point, tolerance, measureCtx)
       // 编辑已有文字时滑块和色块会直接作用于它，需先同步为这段文字的字号和颜色
       if (hit?.type === 'text') {
@@ -565,7 +590,6 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
       return
     }
     if (tool === 'comment') {
-      if (point.x < 0 || point.y < 0 || point.x > docSize.width || point.y > docSize.height) return
       // 抬起时才新建评论，开始双指捏合时手势被取消，不会误建评论
       gestureRef.current = { kind: 'comment', pointerId, point }
       return
@@ -803,8 +827,31 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     if (next !== 'select') setSelectedId(null)
   }
 
+  /** 导出当前笔迹和评论；独立草稿只回传数据，原入口继续持久化参考图。 */
   const handleConfirm = async () => {
     if (!docSize || !canConfirm || isSaving) return
+    const exportBounds = getSketchExportBounds(docSize, elements, measureCtx, commentData)
+    const exportedComments = remapSketchComments(commentData, docSize, exportBounds)
+    const exportedLayout = imageBounds ? { width: exportBounds.width, height: exportBounds.height, imageBounds: { ...imageBounds, x: imageBounds.x - exportBounds.x, y: imageBounds.y - exportBounds.y } } : undefined
+    const needsExport = elements.length > 0 || exportBounds.x !== 0 || exportBounds.y !== 0 || exportBounds.width !== docSize.width || exportBounds.height !== docSize.height
+    if (onConfirm) {
+      try {
+        setIsSaving(true)
+        if (!needsExport && baseImageSrc) await onConfirm(baseImageSrc, commentData, initialLayout)
+        else {
+          const canvas = document.createElement('canvas')
+          canvas.width = exportBounds.width
+          canvas.height = exportBounds.height
+          drawScene(canvas.getContext('2d')!, elements, null, exportBounds)
+          await onConfirm(await blobToDataUrl(await canvasToBlob(canvas, 'image/png')), exportedComments, exportedLayout)
+        }
+        closeNow()
+      } catch (err) {
+        showToast(`标注保存失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+        setIsSaving(false)
+      }
+      return
+    }
     const state = useStore.getState()
     const replaceIdx = replaceImageId ? state.inputImages.findIndex((img) => img.id === replaceImageId) : -1
     if (replaceIdx < 0 && state.inputImages.length >= MAX_INPUT_IMAGES) {
@@ -813,7 +860,7 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     }
 
     // 只改了评论时不必重新导出图片
-    if (replaceIdx >= 0 && elements.length === 0) {
+    if (replaceIdx >= 0 && !needsExport) {
       saveComments(replaceIdx)
       showToast('评论已更新', 'success')
       closeNow()
@@ -823,28 +870,28 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
     try {
       setIsSaving(true)
       const canvas = document.createElement('canvas')
-      canvas.width = docSize.width
-      canvas.height = docSize.height
-      drawScene(canvas.getContext('2d')!, elements)
+      canvas.width = exportBounds.width
+      canvas.height = exportBounds.height
+      drawScene(canvas.getContext('2d')!, elements, null, exportBounds)
       const dataUrl = await blobToDataUrl(await canvasToBlob(canvas, 'image/png'))
       const id = await storeImage(dataUrl, 'upload')
       cacheImage(id, dataUrl)
       // 参考图按内容哈希去重：导出结果与另一张参考图完全相同时不重复添加，评论合并到那张图上
       const existingIdx = useStore.getState().inputImages.findIndex((img) => img.id === id)
       if (existingIdx >= 0 && existingIdx !== replaceIdx) {
-        if (commentData.length) saveComments(existingIdx, true)
+        if (commentData.length) saveComments(existingIdx, true, exportedComments)
         showToast(commentData.length ? `参考图中已有相同的图片，评论已合并到图${existingIdx + 1}` : '参考图中已有相同的图片', 'info')
         closeNow()
         return
       }
       if (replaceIdx >= 0) {
-        useStore.getState().replaceInputImage(replaceIdx, { id, dataUrl })
+        useStore.getState().replaceInputImage(replaceIdx, { id, dataUrl, sketchLayout: exportedLayout })
         showToast('参考图已更新', 'success')
       } else {
-        useStore.getState().addInputImage({ id, dataUrl })
+        useStore.getState().addInputImage({ id, dataUrl, sketchLayout: exportedLayout })
         showToast('草图已添加到参考图', 'success')
       }
-      if (commentsChanged) saveComments(useStore.getState().inputImages.findIndex((img) => img.id === id))
+      if (commentData.length || commentsChanged) saveComments(useStore.getState().inputImages.findIndex((img) => img.id === id), false, exportedComments)
       closeNow()
     } catch (err) {
       console.error(err)
@@ -858,7 +905,7 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
   const brushRingPoint = !showsBrush || !docSize || viewport.isAltPressed
     ? null
     : isAdjustingWidth
-    ? hoverPoint ?? viewport.getVisibleCenter(cssScale)
+    ? hoverPoint ?? { x: viewport.getVisibleCenter(cssScale).x + workspace!.x, y: viewport.getVisibleCenter(cssScale).y + workspace!.y }
     : tool === 'shape' ? null : hoverPoint
   const canvasCursor = viewport.isPanning
     ? 'grabbing'
@@ -976,8 +1023,8 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
         }
       />
 
-      {/* 画布区域：整个区域都是缩放视口，放大后画布可铺满 */}
-      <div className="relative min-h-0 flex-1 bg-gray-100/70 dark:bg-black/25">
+      {/* 背景固定铺满作画区；图外笔迹只扩展渲染和导出范围，不改变可见底纸边界。 */}
+      <div role="region" aria-label="画板作画区域" className="relative min-h-0 flex-1" style={{ background: paperColor }}>
         <div
           ref={viewRef}
           className="absolute inset-0 flex touch-none select-none items-center justify-center overflow-hidden py-4 pl-16 pr-4 sm:px-20 sm:py-6"
@@ -999,8 +1046,8 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
               ref={frameRef}
               className="relative max-h-full max-w-full"
               style={{
-                aspectRatio: `${docSize.width} / ${docSize.height}`,
-                width: `min(100%, 100cqh * ${docSize.width / docSize.height})`,
+                aspectRatio: `${workspace!.width} / ${workspace!.height}`,
+                width: `min(100%, 100cqh * ${workspace!.width / workspace!.height})`,
               }}
             >
               <div
@@ -1010,20 +1057,26 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
                   transformOrigin: '0 0',
                 }}
               >
-                <div className="absolute inset-0 overflow-hidden rounded-lg shadow-sm ring-1 ring-black/5 dark:ring-white/10" style={{ background: paperColor }}>
+                <div className="absolute overflow-hidden" style={{
+                  left: (renderBounds!.x - workspace!.x) * cssScale, top: (renderBounds!.y - workspace!.y) * cssScale,
+                  width: renderBounds!.width * cssScale, height: renderBounds!.height * cssScale,
+                }}>
                   <canvas
                     ref={canvasRef}
-                    width={docSize.width}
-                    height={docSize.height}
+                    width={renderBounds!.width}
+                    height={renderBounds!.height}
                     className="absolute inset-0 h-full w-full"
                   />
                   <canvas
                     ref={overlayRef}
-                    width={docSize.width}
-                    height={docSize.height}
+                    width={renderBounds!.width}
+                    height={renderBounds!.height}
                     className="pointer-events-none absolute inset-0 h-full w-full"
                   />
                 </div>
+                {imageBounds && (
+                  <div aria-label="原图区域" className="pointer-events-none absolute ring-1 ring-gray-400/40" style={{ left: (imageBounds.x - workspace!.x) * cssScale, top: (imageBounds.y - workspace!.y) * cssScale, width: imageBounds.width * cssScale, height: imageBounds.height * cssScale }} />
+                )}
                 {editingText && (
                   <textarea
                     ref={textareaRef}
@@ -1037,8 +1090,8 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
                     wrap="off"
                     className="absolute resize-none overflow-hidden whitespace-pre border-0 bg-transparent p-0 outline-dashed outline-[1.5px] outline-offset-[6px] outline-blue-500"
                     style={{
-                      left: editingText.x * cssScale,
-                      top: editingText.y * cssScale,
+                      left: (editingText.x - workspace!.x) * cssScale,
+                      top: (editingText.y - workspace!.y) * cssScale,
                       width: ((editingSize?.width ?? 0) + editingText.fontSize) * cssScale,
                       height: (editingSize?.height ?? editingText.fontSize * SKETCH_LINE_HEIGHT) * cssScale,
                       fontSize: editingText.fontSize * cssScale,
@@ -1052,8 +1105,8 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
               </div>
               {brushRingPoint && (
                 <BrushCursor
-                  x={brushRingPoint.x * viewScale + viewport.transform.x}
-                  y={brushRingPoint.y * viewScale + viewport.transform.y}
+                  x={(brushRingPoint.x - workspace!.x) * viewScale + viewport.transform.x}
+                  y={(brushRingPoint.y - workspace!.y) * viewScale + viewport.transform.y}
                   size={strokeWidth * viewScale}
                 />
               )}
@@ -1062,7 +1115,7 @@ function SketchBoardEditor({ baseImageSrc, replaceImageId }: SketchBoardRequest)
                 activeId={activeCommentId}
                 docSize={docSize}
                 viewScale={viewScale}
-                offset={viewport.transform}
+                offset={{ x: viewport.transform.x - workspace!.x * viewScale, y: viewport.transform.y - workspace!.y * viewScale }}
                 bounds={activeCommentId ? getCommentEditorBounds() : null}
                 interactive={tool === 'comment' || tool === 'select'}
                 canOpen={tool === 'comment'}

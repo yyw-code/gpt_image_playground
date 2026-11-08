@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { useStore, reuseConfig, openImageRegeneration, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { ALL_FAVORITES_COLLECTION_ID, getTaskFavoriteCollectionIds } from '../lib/favoriteState'
 import { isTauri } from '../lib/platform'
 import { getIndexesInRect } from '../lib/virtualGrid'
 import { useVirtualGrid } from '../hooks/useVirtualGrid'
+import { getImageRegenerationTargets, getImageVersions, getVisibleVersionTasks } from '../lib/imageRegeneration'
 import TaskCard from './TaskCard'
 
+/** 按筛选展示任务并聚合同图版本，来源缺失的版本仍独立可见。 */
 export default function TaskGrid() {
   const tasks = useStore((s) => s.tasks)
   const searchQuery = useStore((s) => s.searchQuery)
@@ -39,14 +41,14 @@ export default function TaskGrid() {
     const sorted = [...tasks].sort((a, b) => b.createdAt - a.createdAt)
     const q = searchQuery.trim().toLowerCase()
     
-    return sorted.filter((t) => {
+    return getVisibleVersionTasks(sorted.filter((t) => {
       if (filterFavorite) {
         if (!t.isFavorite) return false
         if (activeFavoriteCollectionId && activeFavoriteCollectionId !== ALL_FAVORITES_COLLECTION_ID && !getTaskFavoriteCollectionIds(t, defaultFavoriteCollectionId).includes(activeFavoriteCollectionId)) return false
       }
       if (!taskMatchesFilterStatus(t, filterStatus)) return false
       return taskMatchesSearchQuery(t, q)
-    })
+    }))
   }, [tasks, searchQuery, filterStatus, filterFavorite, activeFavoriteCollectionId, defaultFavoriteCollectionId])
   // 框选的事件处理只在挂载时注册，通过 ref 读取最新列表
   const filteredTasksRef = useRef(filteredTasks)
@@ -309,6 +311,7 @@ export default function TaskGrid() {
       <div ref={gridRef} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" style={{ paddingTop, paddingBottom }}>
         {filteredTasks.slice(startIndex, endIndex).map((task) => (
           <div key={task.id} className="task-card-wrapper" data-task-id={task.id}>
+            {tasks.some((item) => item.regeneration?.taskId === task.id) && <button className="mb-1 rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-600 dark:bg-blue-500/10 dark:text-blue-400" onClick={() => setDetailTaskId(task.id)}>查看新版本 · {getImageRegenerationTargets([task]).flatMap((target) => getImageVersions(tasks, task.id, target.requestIndex)).filter((entry) => entry.task.id !== task.id).length} 张</button>}
             <TaskCard
               task={task}
               onClick={(e) => {
@@ -326,7 +329,7 @@ export default function TaskGrid() {
                 setDetailTaskId(task.id)
               }}
               onReuse={() => reuseConfig(task)}
-              onEditOutputs={() => editOutputs(task)}
+              onEditOutputs={() => openImageRegeneration(getImageRegenerationTargets([task]))}
               onDelete={() => handleDelete(task)}
               isSelected={selectedTaskIds.includes(task.id)}
             />

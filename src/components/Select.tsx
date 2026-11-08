@@ -23,6 +23,8 @@ interface Option {
 
 interface SelectProps {
   value: string | number
+  /** 为复用位置提供可访问名称，不改变菜单样式。 */
+  ariaLabel?: string
   onChange: (value: any) => void
   onReorder?: (sourceValue: string | number, targetValue: string | number, position: 'before' | 'after' | null) => void
   options: Option[]
@@ -36,8 +38,8 @@ interface SelectProps {
   menuClassName?: string
 }
 
-/** 展示可选值；不支持的选项保留可见，并阻止点击选择。 */
-export default function Select({ value, onChange, onReorder, options, disabled, className, onOpenChange, showValueTooltips = false, prefix, menuClassName }: SelectProps) {
+/** 复用统一下拉样式；按钮触发器支持聚焦和字段组禁用，键盘可确认选项或关闭菜单，不支持的选项保留可见且不可选择。 */
+export default function Select({ value, ariaLabel, onChange, onReorder, options, disabled, className, onOpenChange, showValueTooltips = false, prefix, menuClassName }: SelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuMaxHeight, setMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
   const [placement, setPlacement] = useState<'bottom' | 'top'>('bottom')
@@ -56,7 +58,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
   const touchDragRef = useRef<{ value: string | number, startX: number, startY: number, moved: boolean } | null>(null)
   const dragScrollIntervalRef = useRef<number | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
 
   const triggerTooltip = useTooltip()
   const [hoveredOptionTooltip, setHoveredOptionTooltip] = useState<string | number | null>(null)
@@ -78,6 +80,10 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
       clearOptionTooltipTimer()
     }
   }, [])
+
+  useEffect(() => {
+    if (disabled) setIsOpen(false)
+  }, [disabled])
 
   useEffect(() => {
     onOpenChange?.(isOpen)
@@ -188,8 +194,20 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
   }
 
   return (
-    <div ref={containerRef} className="relative w-full">
-      <div
+    <div ref={containerRef} className="relative w-full" onKeyDown={(event) => {
+      // 先关闭当前下拉，避免 Escape 冒泡后连同外层编辑弹窗一起关闭。
+      if (event.key !== 'Escape' || !isOpen) return
+      event.preventDefault()
+      event.stopPropagation()
+      setIsOpen(false)
+      triggerRef.current?.focus()
+    }}>
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
         ref={triggerRef}
         {...(showValueTooltips ? triggerTooltip.handlers : {})}
         onClick={(e) => {
@@ -208,10 +226,12 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
             {selectedOption?.label ?? value}
           </ViewportTooltip>
         )}
-      </div>
+      </button>
 
       {isOpen && (
         <div
+          role="listbox"
+          aria-label={ariaLabel}
           className={`absolute z-50 w-full overflow-hidden overflow-y-auto rounded-xl border border-transparent bg-white/95 shadow-[0_8px_30px_rgb(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-xl dark:bg-gray-800/95 dark:shadow-[0_8px_30px_rgb(0,0,0,0.4)] dark:ring-white/[0.06] custom-scrollbar ${menuClassName ?? ''} ${
             placement === 'top' ? 'bottom-full mb-1.5 animate-dropdown-up' : 'top-full mt-1.5 animate-dropdown-down'
           }`}
@@ -221,8 +241,17 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
             <div
               key={option.value}
               data-option-value={String(option.value)}
+              role="option"
+              aria-selected={option.value === value}
+              tabIndex={disabled || option.disabled ? -1 : 0}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return
+                event.preventDefault()
+                event.currentTarget.click()
+                triggerRef.current?.focus()
+              }}
               aria-disabled={option.disabled || undefined}
-              title={option.disabledReason}
+              title={option.disabled ? option.disabledReason : undefined}
               draggable={option.draggable}
               onDragStart={(e) => {
                 if (!option.draggable) return
@@ -396,7 +425,7 @@ export default function Select({ value, onChange, onReorder, options, disabled, 
               }}
               onTouchCancel={clearTouchDrag}
               onClick={(e) => {
-                if (option.disabled) return
+                if (disabled || option.disabled) return
                 if ((e.target as HTMLElement).closest('button, [data-drag-handle]')) return
                 e.preventDefault()
                 onChange(option.value)
