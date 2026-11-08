@@ -1,3 +1,5 @@
+import type { TaskParams } from '../types'
+
 const SIZE_PATTERN = /^\s*(\d+)\s*[xX×]\s*(\d+)\s*$/
 const RATIO_PATTERN = /^\s*(\d+(?:\.\d+)?)\s*[:xX×]\s*(\d+(?:\.\d+)?)\s*$/
 const SIZE_MULTIPLE = 16
@@ -125,8 +127,50 @@ function greatestCommonDivisor(a: number, b: number): number {
   return b === 0 ? a : greatestCommonDivisor(b, a % b)
 }
 
-/** 将请求像素转为构图指令；常见比例允许规整误差，auto 或无效尺寸不追加要求。 */
-export function getImageAspectRatioInstruction(size: string): string {
+/** 校验外部保存的画布比例；保留用户的比例表达，非法值返回 undefined，auto 表示由模型决定。 */
+export function normalizeImageAspectRatio(value: unknown): string | undefined {
+  if (value === 'auto') return 'auto'
+  if (typeof value !== 'string') return undefined
+  const parsed = parseRatio(value)
+  if (!parsed || Math.max(parsed.width, parsed.height) > Number.MAX_SAFE_INTEGER
+    || Math.max(parsed.width, parsed.height) / Math.min(parsed.width, parsed.height) > MAX_ASPECT_RATIO) return undefined
+  return `${parsed.width}:${parsed.height}`
+}
+
+/** 优先读取独立的目标比例；旧像素预设恢复原选择，自定义尺寸按真实宽高恢复，不修改历史记录。 */
+export function getRequestedImageAspectRatio(params: Pick<TaskParams, 'size' | 'imageAspectRatio'>): string {
+  if (params.imageAspectRatio !== undefined) return normalizeImageAspectRatio(params.imageAspectRatio) ?? 'auto'
+  if (!SIZE_PATTERN.test(params.size)) return 'auto'
+  const dimensions = parseRatio(params.size)
+  if (!dimensions || !Number.isSafeInteger(dimensions.width) || !Number.isSafeInteger(dimensions.height)) return 'auto'
+  for (const presets of Object.values(COMMON_SIZE_PRESETS)) {
+    for (const [ratio, size] of Object.entries(presets)) if (size === params.size.trim()) return ratio
+  }
+  const ratio = dimensions.width / dimensions.height
+  const nearest = COMMON_ASPECT_RATIOS.find(([width, height]) => Math.abs(ratio / (width / height) - 1) <= MAX_RATIO_ERROR)
+  if (nearest) return `${nearest[0]}:${nearest[1]}`
+  const divisor = greatestCommonDivisor(dimensions.width, dimensions.height)
+  return normalizeImageAspectRatio(`${dimensions.width / divisor}:${dimensions.height / divisor}`) ?? 'auto'
+}
+
+/** 为目标比例提供小画布请求建议；常见横竖版沿用真实接口验证值，不承诺返回这些像素。 */
+export function getImageRatioSize(params: Pick<TaskParams, 'size' | 'imageAspectRatio'>): string {
+  const ratio = getRequestedImageAspectRatio(params)
+  if (ratio === 'auto') return 'auto'
+  if (ratio === '16:9') return '1536x864'
+  if (ratio === '9:16') return '864x1536'
+  return calculateImageSize('1K', ratio) ?? 'auto'
+}
+
+/** 显式目标比例使用实测画布约束；无独立比例时保留旧构图尾注，兼容历史提示词清理。 */
+export function getImageAspectRatioInstruction(size: string, aspectRatio?: string): string {
+  if (aspectRatio !== undefined) {
+    const ratio = normalizeImageAspectRatio(aspectRatio)
+    const dimensions = ratio && parseRatio(ratio)
+    if (!dimensions) return ''
+    const orientation = dimensions.width === dimensions.height ? 'square' : dimensions.width > dimensions.height ? 'landscape' : 'portrait'
+    return `The entire output image canvas must have exactly a ${ratio} width-to-height aspect ratio, ${orientation} orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.`
+  }
   if (!SIZE_PATTERN.test(size)) return ''
   const dimensions = parseRatio(size)
   if (!dimensions || !Number.isSafeInteger(dimensions.width) || !Number.isSafeInteger(dimensions.height)) return ''
@@ -147,17 +191,17 @@ export function getImageAspectRatioInstruction(size: string): string {
 }
 
 /** 在最终请求提示词中补充比例，兼容忽略 size 的上游；相同尾部指令只追加一次。 */
-export function appendImageAspectRatioPrompt(prompt: string, size: string): string {
-  const instruction = getImageAspectRatioInstruction(size)
+export function appendImageAspectRatioPrompt(prompt: string, size: string, aspectRatio?: string): string {
+  const instruction = getImageAspectRatioInstruction(size, aspectRatio)
   if (!instruction || prompt.trimEnd().endsWith(instruction)) return prompt
   return `${prompt.trimEnd()}\n\n${instruction}`
 }
 
 /** 只清除本地追加的比例尾注用于改写比较，保留用户原文和上游的其他修改。 */
-export function stripInjectedImageAspectRatioPrompt(prompt: string, originalPrompt: string, size: string): string {
-  const instruction = getImageAspectRatioInstruction(size)
+export function stripInjectedImageAspectRatioPrompt(prompt: string, originalPrompt: string, size: string, aspectRatio?: string): string {
+  const instruction = getImageAspectRatioInstruction(size, aspectRatio)
   if (!instruction || originalPrompt.trimEnd().endsWith(instruction)) return prompt
-  if (prompt === appendImageAspectRatioPrompt(originalPrompt, size)) return originalPrompt
+  if (prompt === appendImageAspectRatioPrompt(originalPrompt, size, aspectRatio)) return originalPrompt
   const suffix = `\n\n${instruction}`
   const trimmed = prompt.trimEnd()
   return trimmed.endsWith(suffix) ? trimmed.slice(0, -suffix.length).trimEnd() : prompt
@@ -211,9 +255,6 @@ export function formatImageRatio(width: number, height: number) {
   }
 
   const actualRatio = roundedWidth / roundedHeight
-  const squareDelta = Math.abs(actualRatio - 1)
-  if (squareDelta <= 0.18) return '≈1:1'
-
   const nearest = commonRatios
     .map(([commonWidth, commonHeight]) => {
       const ratio = commonWidth / commonHeight
@@ -242,7 +283,7 @@ export function formatImageRatio(width: number, height: number) {
     .filter((item) => item.label !== simplified)
     .sort((a, b) => a.score - b.score)[0]
 
-  return friendlyNearest && friendlyNearest.delta <= 0.04 ? `≈${friendlyNearest.label}` : simplified
+  return friendlyNearest && friendlyNearest.delta <= MAX_RATIO_ERROR ? `≈${friendlyNearest.label}` : simplified
 }
 
 /**

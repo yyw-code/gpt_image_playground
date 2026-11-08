@@ -16,6 +16,39 @@ const prompt = 'Draw a cat.'
 const composition = 'Composition: 21:9 aspect ratio, landscape canvas.'
 const referenceImage = 'data:image/png;base64,aW1hZ2U='
 
+describe('站点目标比例发送', () => {
+  it.each([false, true])('CLI=%s 时普通生成及参考图都发送明确的目标画布比例', async (codexCli) => {
+    const fetchMock = mockImageResponse()
+    const settings = normalizeSettings({ profiles: [{ ...profile, codexCli }], activeProfileId: profile.id, allowPromptRewrite: true })
+    for (const edit of [false, true]) {
+      await callImageApi({ settings, params: { ...params, n: 1, imageAspectRatio: '9:16' }, prompt, inputImageDataUrls: edit ? [referenceImage] : [] })
+    }
+    const submits = fetchMock.mock.calls.filter(([url]) => String(url).startsWith(profile.baseUrl))
+    expect(submits).toHaveLength(2)
+    for (const [, init] of submits) {
+      const body = init?.body instanceof FormData ? Object.fromEntries(init.body.entries()) : JSON.parse(String(init?.body))
+      expect(body.prompt).toContain('entire output image canvas must have exactly a 9:16 width-to-height aspect ratio, portrait orientation')
+      expect(body.prompt).toContain('Do not place a differently shaped picture inside a frame or add borders.')
+      expect(body.size).toBe(codexCli ? undefined : '864x1536')
+    }
+  })
+
+  it('Responses 与 Agent 单图/批量保留显式比例，不被旧 size 覆盖', async () => {
+    const fetchMock = mockImageResponse()
+    const responsesProfile = { ...profile, apiMode: 'responses' as const, imageGenerationModel: profile.model }
+    const settings = normalizeSettings({ profiles: [responsesProfile], activeProfileId: profile.id })
+    const requested = { ...params, n: 1, imageAspectRatio: '16:9' }
+    await callImageApi({ settings, params: requested, prompt, inputImageDataUrls: [] })
+    await callAgentResponsesApi({ settings, profile: responsesProfile, params: requested, input: prompt })
+    await callBatchImageSingle({ profile: responsesProfile, params: requested, prompt, batchItemId: 'cover', referenceImageDataUrls: [referenceImage], referenceIds: ['original'], allowPromptRewrite: false })
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))
+    expect(bodies[0].input).toContain('exactly a 16:9 width-to-height aspect ratio')
+    expect(bodies[1].instructions).toContain('exactly a 16:9 width-to-height aspect ratio')
+    expect(bodies[2].input[0].content[0].text).toContain('exactly a 16:9 width-to-height aspect ratio')
+    for (const body of bodies) expect(body.tools[0].size).toBe('1536x864')
+  })
+})
+
 beforeEach(() => {
   mocks.siteMode.IS_SITE_MODE = true
   setSiteConnection(profile)
@@ -38,14 +71,31 @@ function mockImageResponse() {
   })
 }
 
-describe('原生参数与兼容构图分离', () => {
+describe('外部原生参数与兼容构图分离', () => {
+  beforeEach(() => { mocks.siteMode.IS_SITE_MODE = false })
+  it('关闭 CLI 后完整发送 3840x1648/WebP；上游返回不同值时保留真实结果，不改写设置', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, _init) => new Response(JSON.stringify({
+      size: '1536x1024', output_format: 'png', data: [{ b64_json: 'aW1hZ2U=' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
+    const requested: TaskParams = { ...params, size: '3840x1648', output_format: 'webp', quality: 'medium', n: 2 }
+    const result = await callImageApi({ settings, params: requested, prompt, inputImageDataUrls: [] })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ size: '3840x1648', output_format: 'webp', quality: 'medium' })
+    }
+    expect(result.actualParams).toMatchObject({ size: '1536x1024', output_format: 'png' })
+    expect(requested.size).toBe('3840x1648')
+    expect(requested.output_format).toBe('webp')
+  })
+
   it.each([false, true])('Images 参考图=%s 时保留原提示词及尺寸、质量、格式、压缩率和数量', async (edit) => {
     const fetchMock = mockImageResponse()
     const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
     const originalParams = { ...params }
     const result = await callImageApi({ settings, params, prompt, inputImageDataUrls: edit ? [referenceImage] : [] })
     const submits = fetchMock.mock.calls.filter(([url]) => String(url).startsWith(profile.baseUrl))
-    expect(submits).toHaveLength(3)
+    expect(submits).toHaveLength(1)
     const [url, init] = submits[0]
     expect(url).toBe(`${profile.baseUrl}/images/${edit ? 'edits' : 'generations'}`)
     if (edit) {
@@ -55,11 +105,11 @@ describe('原生参数与兼容构图分离', () => {
       expect(body.get('quality')).toBe('high')
       expect(body.get('output_format')).toBe('webp')
       expect(body.get('output_compression')).toBe('80')
-      expect(body.get('n') ?? '1').toBe('1')
+      expect(body.get('n')).toBe('3')
       expect(body.get('image[]')).toBeInstanceOf(Blob)
     } else {
       expect({ ...JSON.parse(String((init as RequestInit).body)), n: JSON.parse(String((init as RequestInit).body)).n ?? 1 }).toMatchObject({
-        prompt, size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, n: 1,
+        prompt, size: '2016x864', quality: 'high', output_format: 'webp', output_compression: 80, n: 3,
       })
     }
     expect(params).toEqual(originalParams)
@@ -102,7 +152,7 @@ describe('原生参数与兼容构图分离', () => {
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
     expect(body.input).toBe(prompt)
     if (hybrid) {
-      expect(body.instructions).toContain(`Append this composition instruction to every image prompt, including reference-image edits and batch items: "${composition}"`)
+      expect(body.instructions).toContain('exactly a 21:9 width-to-height aspect ratio')
       expect(body.instructions).not.toContain('Generate at 2016x864 resolution.')
     } else {
       expect(body.instructions).not.toContain('Append this composition instruction')
@@ -141,7 +191,7 @@ describe('原生参数与兼容构图分离', () => {
     const settings = normalizeSettings({ profiles: [codexProfile], activeProfileId: profile.id, allowPromptRewrite: true })
     await callImageApi({ settings, params: { ...params, n: 1 }, prompt, inputImageDataUrls: [], skipCodexCliSizePrompt: true })
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
-    expect(body.prompt).toBe(`${prompt}\n\n${composition}`)
+    expect(body.prompt).toContain(`${prompt}\n\nThe entire output image canvas must have exactly a 21:9 width-to-height aspect ratio`)
     expect(body.size).toBeUndefined()
     expect(body.quality).toBeUndefined()
     expect(body.output_format).toBeUndefined()
@@ -153,10 +203,10 @@ describe('原生参数与兼容构图分离', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'quota exhausted' } }), { status: 429 }))
     const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })
     await expect(callImageApi({ settings, params, prompt, inputImageDataUrls: [] })).rejects.toThrow('quota exhausted')
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     for (const [, init] of fetchMock.mock.calls) {
       const body = JSON.parse(String((init as RequestInit).body))
-      expect({ ...body, n: body.n ?? 1 }).toMatchObject({ size: '2016x864', quality: 'high', n: 1 })
+      expect({ ...body, n: body.n ?? 1 }).toMatchObject({ size: '2016x864', quality: 'high', n: 3 })
     }
   })
 })

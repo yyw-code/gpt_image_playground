@@ -100,7 +100,7 @@ describe('callImageApi', () => {
     })
     const init = fetchMock.mock.calls.find(([url]) => String(url).includes(edit ? 'images/edits' : 'images/generations'))?.[1]
     const body = edit ? Object.fromEntries((init?.body as FormData).entries()) : JSON.parse(String(init?.body))
-    expect(body).toMatchObject({ prompt: 'cup\n\nComposition: 16:9 aspect ratio, landscape canvas.', n: edit ? '1' : 1 })
+    expect(body).toMatchObject({ prompt: 'cup\n\nThe entire output image canvas must have exactly a 16:9 width-to-height aspect ratio, landscape orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.', n: edit ? '1' : 1 })
     for (const key of ['size', 'quality', 'complexity', 'output_format', 'output_compression', 'moderation', 'background', 'transparent_output']) expect(body).not.toHaveProperty(key)
     if (edit) expect(body['image[]']).toBeInstanceOf(Blob)
   })
@@ -434,7 +434,7 @@ describe('callImageApi', () => {
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
     expect(body.size).toBeUndefined()
-    expect(body.prompt).toBe('prompt\n\nComposition: 1:1 aspect ratio, square canvas.')
+    expect(body.prompt).toBe('prompt\n\nThe entire output image canvas must have exactly a 1:1 width-to-height aspect ratio, square orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.')
   })
 
   it('does not add a size hint for auto in Codex CLI mode', async () => {
@@ -476,7 +476,7 @@ describe('callImageApi', () => {
 
     const [, init] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((init as RequestInit).body))
-    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt\n\nComposition: 1:1 aspect ratio, square canvas.')
+    expect(body.prompt).toBe('Generate at 1024x1024 resolution. prompt\n\nThe entire output image canvas must have exactly a 1:1 width-to-height aspect ratio, square orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.')
   })
 
   it('records actual params returned on Images API responses in Codex CLI mode', async () => {
@@ -1174,7 +1174,7 @@ describe('callImageApi', () => {
     for (const [, init] of fetchMock.mock.calls) {
       const body = JSON.parse(String((init as RequestInit).body))
       expect(body).toMatchObject({
-        prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
+        prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nThe entire output image canvas must have exactly a 4:3 width-to-height aspect ratio, landscape orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.',
         n: 1,
       })
       expect(body).not.toHaveProperty('size')
@@ -1220,7 +1220,7 @@ describe('callImageApi', () => {
     })
 
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
-    expect(body).toEqual({ prompt: 'prompt\n\nComposition: 4:3 aspect ratio, landscape canvas.' })
+    expect(body).toEqual({ prompt: 'prompt\n\nThe entire output image canvas must have exactly a 4:3 width-to-height aspect ratio, landscape orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.' })
   })
 
   it('keeps successful Codex CLI sync custom results when one request fails', async () => {
@@ -1315,7 +1315,7 @@ describe('callImageApi', () => {
     for (const [url, init] of submitCalls) {
       expect(url).toBe('https://api.example.com/v1/images/edits')
       const body = (init as RequestInit).body as FormData
-      expect(body.get('prompt')).toBe('Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nComposition: 4:3 aspect ratio, landscape canvas.')
+      expect(body.get('prompt')).toBe('Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nThe entire output image canvas must have exactly a 4:3 width-to-height aspect ratio, landscape orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.')
       expect(body.get('size')).toBeNull()
       expect(body.get('quality')).toBeNull()
       expect(body.get('n')).toBe('1')
@@ -1380,7 +1380,7 @@ describe('callImageApi', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const submitBody = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
     expect(submitBody).toMatchObject({
-      prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nComposition: 4:3 aspect ratio, landscape canvas.',
+      prompt: 'Treat everything after this line as one complete image-generation prompt, including the resolution instruction. Follow it exactly without rewriting or omitting anything:\nprompt\n\nThe entire output image canvas must have exactly a 4:3 width-to-height aspect ratio, landscape orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.',
       n: 3,
     })
     expect(submitBody).not.toHaveProperty('size')

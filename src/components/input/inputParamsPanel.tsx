@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiProfile, AppSettings, BatchProgress, BatchPromptMode, TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
-import { getImageParameterCapabilities } from '../../lib/imageModels'
+import { getImageParameterCapabilities, usesImageAspectRatio } from '../../lib/imageModels'
 import { isTauri } from '../../lib/platform'
 import { IS_SITE_MODE } from '../../lib/siteMode'
 import { dismissAllTooltips } from '../../lib/tooltipDismiss'
@@ -95,7 +95,7 @@ interface HintTooltipState {
   startTouch: () => void
 }
 
-/** 按供应商和通道展示参数；区分原生字段与兼容构图，说明返回值核对和本站排队规则。 */
+/** 按供应商和通道展示参数；站点使用目标比例，外部原生通道保留像素设置，差异按原图核对。 */
 export default function InputParamsPanel({
   params,
   setParams,
@@ -205,6 +205,7 @@ export default function InputParamsPanel({
 }) {
   const isGrok = activeProfile.provider === 'grok'
   const capabilities = getImageParameterCapabilities(activeProfile)
+  const ratioOnly = usesImageAspectRatio(activeProfile)
   // 全部参数保留展示，不支持的选项置灰，发送前继续按能力过滤。
   const moreSummary = !capabilities.nativeOutput ? '接口原始格式' : [
     ...(capabilities.complexity ? [`复杂度 ${params.complexity ?? '默认'}`] : []),
@@ -262,14 +263,14 @@ export default function InputParamsPanel({
               onClick={() => { dismissAllTooltips(); onOpenSizePicker() }}
               className={`flex w-full items-center ${CHIP_CLASS}`}
             >
-              {prefix(capabilities.sizeMode === 'composition' ? '构图比例' : '尺寸')}
+              {prefix(ratioOnly ? '比例' : '尺寸')}
               <span className="font-mono">{displaySize}</span>
             </button>
             <ButtonTooltip
-              visible={(isFalTextToImage || activeProfile.codexCli) && sizeHint.visible}
+              visible={(isFalTextToImage || ratioOnly) && sizeHint.visible}
               text={isFalTextToImage
                 ? <>fal.ai 的文生图模式不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 参数</>
-                : '构图比例仅通过提示词引导，接口决定实际像素尺寸，不保证精确比例'}
+                : '按目标比例生成整张画布，实际分辨率由模型决定；按原图核对比例，偏差超过 1% 时标黄提示'}
             />
           </div>
           <div
@@ -341,12 +342,13 @@ export default function InputParamsPanel({
         <ButtonTooltip visible={streamConcurrentByN && streamConcurrentHint.visible && !nLimitHint.visible} text={isGrok ? '目标张数拆为独立单图请求，同一页面最多同时发送 10 个 Grok 请求；后端繁忙时仍可能排队，保留部分成功，不自动补图' : IS_SITE_MODE && activeProfile.provider === 'openai' ? '同一页面最多同时发送 10 个 ChatGPT 图片请求；后端繁忙时仍可能排队，保留成功图片，失败后可手动补图' : '目标张数拆为独立单图请求；张数不是并发限制，实际成功张数以结果为准'} />
       </label>
       <ParamPopoverChip label="更多" summary={moreSummary} className="sm:min-w-[5rem]">
-        {activeProfile.provider === 'openai' && capabilities.nativeOutput && <p className="text-xs text-gray-500">原生模式通过接口参数发送尺寸，不自动向提示词追加比例。质量、格式是否执行以返回结果为准；优先使用 PNG，其他格式可能被上游替换。</p>}
+        {ratioOnly && <p className="text-xs text-gray-500">按目标比例生成整张画布，实际分辨率由模型决定；按原图核对比例，偏差超过 1% 时标黄提示。质量、格式是否执行以返回结果为准。</p>}
+        {!ratioOnly && activeProfile.provider === 'openai' && capabilities.nativeOutput && <p className="text-xs text-gray-500">原生模式通过接口参数发送尺寸，不自动向提示词追加比例。质量、格式是否执行以返回结果为准；优先使用 PNG，其他格式可能被上游替换。</p>}
         {!capabilities.nativeOutput && (
           <>
             <p className="text-gray-500">{isGrok
               ? '1K/2K 为分辨率档位，实际像素和图片格式以接口返回为准；最多 3 张参考图，不支持遮罩与背景处理。'
-              : capabilities.sizeMode === 'composition' ? '图片质量、像素尺寸和格式由接口决定，构图比例仅作提示词引导。' : '当前图片模型的参数能力尚未确认，使用接口默认质量、尺寸和格式。'}</p>
+              : capabilities.sizeMode === 'composition' ? '图片质量和格式由接口决定。' : '当前图片模型的参数能力尚未确认，使用接口默认质量、尺寸和格式。'}</p>
             {isGrok && activeProfile.model === 'grok-imagine-image-2.0' && <p className="mt-2 text-gray-500">auto 当前在生图时选择 low、编辑时选择 medium，费用随实际档位变化。</p>}
             {isGrok && activeProfile.model === 'grok-imagine-image-quality' && <p className="mt-2 text-gray-500">官方已将此旧名称迁移至 2.0 low，不代表更高质量。</p>}
           </>

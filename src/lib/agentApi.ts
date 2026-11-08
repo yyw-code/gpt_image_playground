@@ -1,12 +1,12 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import { appendStreamingFormatHint, createRequestTimeoutError, getApiErrorMessage, getResponsesImageResultBase64, maybeAppendImageToolDroppedHint, maybeAppendStreamingHint, MIME_MAP, normalizeBase64Image, pickActualParams, PROMPT_REWRITE_GUARD_PREFIX } from './imageApiShared'
-import { getImageGenerationModel, getImageRequestParameters } from './imageModels'
+import { getImageGenerationModel, getImageRequestParameters, usesImageAspectRatio } from './imageModels'
 import { apiFetch } from './platform'
 import { getSiteProfileError } from './siteProfiles'
 import { normalizeResponsesOutputItems } from './responsesOutputState'
 import { isEventStreamResponse, readJsonServerSentEvents, throwIfAborted } from './serverSentEvents'
-import { appendImageAspectRatioPrompt, getImageAspectRatioInstruction } from './size'
+import { appendImageAspectRatioPrompt, getImageAspectRatioInstruction, getRequestedImageAspectRatio } from './size'
 import { IS_SITE_MODE } from './siteMode'
 import { enqueueImageRequest } from './imageRequestQueue'
 
@@ -65,7 +65,7 @@ const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '- Do not use LaTeX delimiters like `\\(...\\)` or `\\[...\\]` in visible assistant text.',
 ].join('\n')
 
-/** 生成 Agent 工具策略；仅兼容图片通道追加构图引导，原生尺寸交给工具参数。 */
+/** 生成 Agent 工具策略；要求站点/兼容图片通道的每次单图、参考图和批量调用遵循目标画布比例。 */
 function createAgentInstructions(settings: AppSettings, params: TaskParams, imageProfile: ApiProfile) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
@@ -87,8 +87,8 @@ function createAgentInstructions(settings: AppSettings, params: TaskParams, imag
     '- When the requested task is complete, stop calling tools and provide the final response.',
   ]
 
-  if (imageProfile.codexCli) {
-    const aspectInstruction = getImageAspectRatioInstruction(params.size)
+  if (usesImageAspectRatio(imageProfile)) {
+    const aspectInstruction = getImageAspectRatioInstruction(params.size, getRequestedImageAspectRatio(params))
     if (aspectInstruction) instructions.push('', `- Append this composition instruction to every image prompt, including reference-image edits and batch items: "${aspectInstruction}"`)
   }
 
@@ -743,7 +743,7 @@ export async function callBatchImageSingle(opts: Parameters<typeof callBatchImag
   return enqueueImageRequest(() => callBatchImageSingleImmediate(opts), { signal: opts.signal, isCancelled: opts.isCancelled, onState: opts.onRequestState })
 }
 
-/** 获得槽位后执行 Agent 单图工具；原生模式保留原提示词，兼容模式追加构图，保留回调和独立超时。 */
+/** 获得槽位后执行 Agent 单图工具；站点和兼容通道约束画布比例，保留参考图、回调及独立超时。 */
 async function callBatchImageSingleImmediate(opts: {
   profile: ApiProfile
   params: TaskParams
@@ -775,8 +775,8 @@ async function callBatchImageSingleImmediate(opts: {
     const referenceMapping = referenceImageDataUrls.length > 0
       ? `Attached reference images correspond to these ids, in order: ${(referenceIds ?? []).map((id) => `<ref id="${id}" />`).join(', ') || 'reference images'}.`
       : ''
-    const aspectPrompt = profile.codexCli
-      ? appendImageAspectRatioPrompt(prompt, params.size)
+    const aspectPrompt = usesImageAspectRatio(profile)
+      ? appendImageAspectRatioPrompt(prompt, params.size, getRequestedImageAspectRatio(params))
       : prompt
     const promptText = allowPromptRewrite ? aspectPrompt : `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
     const guardedPrompt = [referenceMapping, promptText].filter(Boolean).join('\n\n')

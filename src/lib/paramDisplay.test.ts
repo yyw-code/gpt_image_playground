@@ -13,6 +13,23 @@ function task(patch: Partial<TaskRecord> = {}): TaskRecord {
 }
 
 describe('actual image parameter display', () => {
+  it('兼容模式保留参考尺寸的精确对照，不用它声称原生参数验证失败', () => {
+    const record = task({ imageParameterMode: 'composition', params: { ...DEFAULT_PARAMS, size: '1920x816' }, actualParams: { size: '1914x822' } })
+    expect(getParamDisplay(record, 'size')).toMatchObject({ requestedValue: '1920x816', displayValue: '1914x822', isMismatch: true })
+    expect(getImageParameterCheck(record).mismatches).toEqual([])
+  })
+
+  it.each([undefined, '', 'auto'])('缺少有效尺寸回显 %s 不展示黄色差异', (size) => {
+    const record = task({ params: { ...DEFAULT_PARAMS, size: '1536x1024' }, actualParams: { size } })
+    expect(getParamDisplay(record, 'size').isMismatch).toBe(false)
+    expect(getImageParameterCheck(record).unverified.map((item) => item.key)).toContain('size')
+  })
+
+  it('Grok 参数旁的比例使用实际宽高，不能用接口照抄比例掩盖不符', () => {
+    const record = task({ apiProvider: 'grok', params: { ...DEFAULT_PARAMS, aspect_ratio: '16:9' }, actualParams: { size: '1024x1024', aspect_ratio: '16:9' } })
+    expect(getParamDisplay(record, 'aspect_ratio')).toMatchObject({ requestedValue: '16:9', displayValue: '1:1', isMismatch: true })
+  })
+
   it.each(['composition', 'default'] as const)('does not compare hidden native draft fields in %s mode', (imageParameterMode) => {
     const record = task({ imageParameterMode, params: { ...DEFAULT_PARAMS, size: '1536x1024', quality: 'high', output_format: 'webp' }, actualParams: { size: '1024x1024', quality: 'low', output_format: 'png' } })
     expect(getImageParameterCheck(record)).toEqual({ checked: 0, mismatches: [], unverified: [] })

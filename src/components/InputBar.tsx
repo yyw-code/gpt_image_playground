@@ -5,13 +5,13 @@ import { deleteFavoriteCollection, useStore, submitTask, submitAgentMessage, sto
 import { DEFAULT_PARAMS, MAX_INPUT_IMAGES, type TaskRecord } from '../types'
 import { getActiveAgentRounds } from '../lib/agentConversationState'
 import { createDefaultOpenAIProfile, getActiveApiProfile, getAgentTextApiProfile, getAgentImageApiProfile, normalizeSettings, resolveApiProfileModel, splitModelList } from '../lib/apiProfiles'
-import { getImageParameterCapabilities } from '../lib/imageModels'
+import { getImageParameterCapabilities, usesImageAspectRatio } from '../lib/imageModels'
 import { MAX_GROK_INPUT_IMAGES } from '../lib/grokImage'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
 import { splitBatchPrompts } from '../lib/batchPrompts'
 import { DEFAULT_FAL_IMAGE_SIZE, getImageSubmissionError, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageComments, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
-import { formatImageRatio, normalizeCodexCliImageSize, normalizeImageSize, parseRatio } from '../lib/size'
+import { getRequestedImageAspectRatio, normalizeCodexCliImageSize, normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
@@ -89,7 +89,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
-/** 维护画廊和 Agent 草稿，按图片模型与通道联动参数及多图提示，保留历史配置临时复用的请求归属。 */
+/** 管理生成草稿和提交入口；站点目标比例独立于请求像素保存，兼容画廊与 Agent 配置。 */
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
@@ -536,9 +536,10 @@ export default function InputBar() {
     : isFalProvider
     ? `fal.ai 每条提示词最多生成 ${outputImageLimit} 张，实际成功张数以结果为准`
     : `${isGrokProvider ? 'Grok' : 'OpenAI'} 每条提示词目标 1～${outputImageLimit} 张，实际成功张数以结果为准`
-  const requestedDimensions = parseRatio(params.size)
+  const ratioOnly = usesImageAspectRatio(activeProfile)
+  const requestedRatio = getRequestedImageAspectRatio(params)
   const displaySize = imageCapabilities.sizeMode === 'auto' ? '接口自动'
-    : imageCapabilities.sizeMode === 'composition' ? requestedDimensions ? formatImageRatio(requestedDimensions.width, requestedDimensions.height) : '自动'
+    : ratioOnly ? requestedRatio === 'auto' ? '自动' : requestedRatio
     : isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
     : (activeProfile.codexCli ? normalizeCodexCliImageSize(params.size) : normalizeImageSize(params.size)) || DEFAULT_PARAMS.size
@@ -1761,7 +1762,9 @@ export default function InputBar() {
       {showSizePicker && (
         <SizePickerModal
           currentSize={isFalTextToImage && params.size === 'auto' ? DEFAULT_FAL_IMAGE_SIZE : params.size}
-          onSelect={(size) => setParams({ size })}
+          onSelect={(size, imageAspectRatio) => setParams({ size, imageAspectRatio })}
+          ratioOnly={ratioOnly}
+          imageAspectRatio={params.imageAspectRatio}
           onClose={() => setShowSizePicker(false)}
           allowAuto={!isFalTextToImage}
           codexCli={activeProfile.codexCli}
@@ -1770,6 +1773,10 @@ export default function InputBar() {
           grokResolution={params.resolution}
           grokAspectRatio={params.aspect_ratio}
           onGrokSelect={setParams}
+          onOpenSettings={() => {
+            setShowSizePicker(false)
+            setShowSettings(true, appMode === 'agent' ? 'agent' : 'api')
+          }}
         />
       )}
 

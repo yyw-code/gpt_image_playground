@@ -55,7 +55,7 @@ import { buildAgentApiInput, buildAgentContinuationInput } from './lib/agentInpu
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
-import { getImageParameterMode } from './lib/imageModels'
+import { getImageParameterMode, usesImageAspectRatio } from './lib/imageModels'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
@@ -78,7 +78,7 @@ import { cleanStaleAgentInputDrafts, clearInputDraftState, isEmptyAgentInputDraf
 import { ALL_FAVORITES_COLLECTION_ID, DEFAULT_FAVORITE_COLLECTION_ID, createDefaultFavoriteCollection, deleteFavoriteCollectionState, ensureDefaultFavoriteCollection, getTaskFavoriteCollectionIds, mergeFavoriteCollections, normalizeFavoriteCollectionIds, normalizeFavoriteCollectionName, normalizeFavoriteCollections, normalizeFavoritePatch, normalizeLoadedFavoriteState, resolveDefaultFavoriteCollectionId, sameFavoriteCollectionIds } from './lib/favoriteState'
 import { createPersistedState, mergePersistedAgentConversations, migratePersistedState, normalizePersistedState } from './lib/persistedState'
 import { addImageSizeParam, createTaskDonePatch, createTaskErrorPatch, deriveAgentImageActualParams, deriveGalleryActualParams, firstActualParams, hasActualParams, hasActualSizeParam, mapActualParamsByImage, mapRevisedPromptsByImage, markInterruptedOpenAIRunningTasks } from './lib/taskState'
-import { stripInjectedCodexCliSizePrompt, stripInjectedImageAspectRatioPrompt } from './lib/size'
+import { getRequestedImageAspectRatio, stripInjectedCodexCliSizePrompt, stripInjectedImageAspectRatioPrompt } from './lib/size'
 import { apiFetch, FetchConnectError, isTauri } from './lib/platform'
 import { pickSaveDir, saveFile, saveFileToDir, type SaveOptions } from './lib/saveFile'
 import { endDataProgress, setDataProgressCancelable, startDataProgress, updateDataProgress } from './lib/dataProgress'
@@ -3740,7 +3740,7 @@ async function executeAgentRound(
   }
 }
 
-/** 执行画廊任务，仅清理兼容模式实际注入的提示词尾注；执行失效后忽略结果并阻止后续请求。 */
+/** 执行任务并保存原图与逐图参数；清理本地注入的比例尾注，历史核对基准不随当前配置变化。 */
 async function executeTask(taskId: string, retryIndices?: number[]) {
   const { settings } = useStore.getState()
   const task = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -3947,14 +3947,15 @@ async function executeTask(taskId: string, retryIndices?: number[]) {
     const actualParams = deriveGalleryActualParams(taskProvider, isAsyncCustomTask, result.actualParams, actualParamsList, outputIds.length)
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)
-    // 只有兼容模式实际注入了构图尾注；原生模式不得剥除上游新增的文字。
-    const revisedPrompts = activeProfile.codexCli
+    // 只清理本次实际注入的尾注，用户原文及上游其他修改必须保留。
+    const revisedPrompts = usesImageAspectRatio(activeProfile)
       ? result.revisedPrompts?.map((prompt) => {
           if (prompt == null) return prompt
-          const withoutAspect = stripInjectedImageAspectRatioPrompt(prompt, requestPrompt, task.params.size)
+          const withoutAspect = stripInjectedImageAspectRatioPrompt(prompt, requestPrompt, task.params.size, getRequestedImageAspectRatio(task.params))
+          const withoutLegacyAspect = activeProfile.codexCli ? stripInjectedImageAspectRatioPrompt(withoutAspect, requestPrompt, task.params.size) : withoutAspect
           return activeProfile.codexCli && task.sourceMode !== 'agent'
-            ? stripInjectedCodexCliSizePrompt(withoutAspect, requestPrompt, task.params.size)
-            : withoutAspect
+            ? stripInjectedCodexCliSizePrompt(withoutLegacyAspect, requestPrompt, task.params.size)
+            : withoutLegacyAspect
         })
       : result.revisedPrompts
     const revisedPromptByImage = shouldStoreRevisedPrompts ? mapRevisedPromptsByImage(outputIds, revisedPrompts) : undefined
@@ -4191,7 +4192,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 按原编号补缺图并保留成功结果及参数基准；Grok 旧记录仅在请求时补默认几何参数，真实变更仍拒绝，未知结果先确认。 */
+/** 按原编号补缺图并保留核对基准；旧记录可补齐等价比例或 Grok 缺省值，真实参数变化仍拒绝，未知结果先确认。 */
 export async function retryTask(task: TaskRecord, requestIndex?: number, confirmUnknown = false) {
   const { settings, tasks } = useStore.getState()
   const storedSource = tasks.find((item) => item.id === task.id)
@@ -4243,6 +4244,8 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
     : { ...normalizedParams, transparent_output: false }
   // 同一任务共用参数快照，不能因补一个槽位而改写已完成图片的核对基准。
   const changedParams = getChangedParams(source.params, taskParams)
+  // 旧任务仅补齐由原尺寸推导的比例不改变基准；真实尺寸或其他参数变化仍阻止混入已有图片。
+  if (source.params.imageAspectRatio === undefined && changedParams.imageAspectRatio === getRequestedImageAspectRatio(source.params)) delete changedParams.imageAspectRatio
   if (activeProfile.provider === 'grok') {
     // 只豁免已知的缺省值补齐；显式值被修改或其他字段变化仍须拦截。
     if (source.params.resolution === undefined && changedParams.resolution === '1k') delete changedParams.resolution

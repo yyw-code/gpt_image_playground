@@ -31,6 +31,17 @@ async function renderTask(overrides: Partial<TaskRecord>) {
 }
 
 describe('批量任务卡恢复', () => {
+  it('新任务展示准确目标比例，不把建议请求像素当作承诺尺寸', async () => {
+    const container = await renderTask({
+      params: { ...DEFAULT_PARAMS, n: 1, size: '1536x864', imageAspectRatio: '16:9' },
+      imageParameterMode: 'composition', status: 'done', outputImages: ['first'], actualParams: { size: '1672x941' },
+    })
+    expect(container.textContent).toContain('比例16:9')
+    expect(container.textContent).not.toContain('1536x864')
+    expect(container.textContent).not.toContain('≈16:9')
+    expect(container.textContent).not.toContain('参数与设置不符')
+  })
+
   it('只统计不符的图片，缺少逐图回显时标记未验证并保留成功结果', async () => {
     const container = await renderTask({
       status: 'done', params: { ...DEFAULT_PARAMS, n: 3, size: '1024x1024', quality: 'high' },

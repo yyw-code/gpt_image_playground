@@ -1,6 +1,7 @@
 import type { AgentConversation, AgentInputDraft, AppMode, AppSettings, FavoriteCollection, InputImage, MaskDraft, PresetConfig, TaskParams } from '../types'
 import { normalizePresetAgent, normalizeSettings } from './apiProfiles'
 import { normalizeGrokResolution, normalizeGrokAspectRatio } from './grokImage'
+import { normalizeImageAspectRatio } from './size'
 import { normalizeAgentConversations } from './agentConversationState'
 import { ensureDefaultFavoriteCollection, normalizeFavoriteCollections, resolveDefaultFavoriteCollectionId } from './favoriteState'
 import { cleanStaleAgentInputDrafts, getPersistableAgentInputDrafts, isEmptyAgentInputDraft, normalizeAgentInputDraft, normalizeAgentInputDrafts, normalizeAgentInputDraftsByKey, saveGalleryInputDraft } from './inputDraftState'
@@ -81,10 +82,11 @@ function normalizeStringArray(value: unknown, fallback: string[]) {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
-/** 恢复任务参数；仅保留合法的 Grok 几何与 2.6 复杂度，兼容缺省字段的旧记录。 */
+/** 恢复草稿参数；校验独立目标比例、Grok 几何和复杂度，旧记录不补写新的比例字段。 */
 function normalizeParams(value: unknown, fallback: TaskParams): TaskParams {
   if (!isRecord(value)) return fallback
   return {
+    ...(normalizeImageAspectRatio(value.imageAspectRatio) ? { imageAspectRatio: normalizeImageAspectRatio(value.imageAspectRatio) } : {}),
     ...(normalizeGrokResolution(value.resolution) ? { resolution: normalizeGrokResolution(value.resolution) } : {}),
     ...(normalizeGrokAspectRatio(value.aspect_ratio) ? { aspect_ratio: normalizeGrokAspectRatio(value.aspect_ratio) } : {}),
     ...(value.complexity === 'low' || value.complexity === 'medium' || value.complexity === 'high' ? { complexity: value.complexity } : {}),

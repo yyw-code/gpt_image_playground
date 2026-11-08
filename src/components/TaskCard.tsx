@@ -62,7 +62,7 @@ function TaskActionButton({
   )
 }
 
-/** 展示队列进度、逐图参数差异与成功封面；参数不符不影响下载，也不触发失败补图。 */
+/** 展示任务状态与参数摘要；有独立目标比例时展示该比例，逐图差异仍由原图尺寸核对。 */
 export default function TaskCard({
   task,
   onReuse,
@@ -318,8 +318,9 @@ export default function TaskCard({
   const complexityDisplay = getParamDisplay(task, 'complexity')
   const showQuality = (!isGrok || task.apiModel === 'grok-imagine-image-2.0') && (task.params.quality !== 'auto' || qualityDisplay.isMismatch)
 
-  const sizeDisplay = getParamDisplay(task, 'size')
-  const showSize = task.params.size !== 'auto' || sizeDisplay.isMismatch
+  const hasTargetRatio = !isGrok && task.params.imageAspectRatio !== undefined
+  const sizeDisplay = getParamDisplay(task, hasTargetRatio ? 'imageAspectRatio' : 'size')
+  const showSize = (hasTargetRatio ? task.params.imageAspectRatio !== 'auto' : task.params.size !== 'auto') || sizeDisplay.isMismatch
 
   const formatDisplay = getParamDisplay(task, 'output_format')
   const showFormat = isGrok ? Boolean(task.actualParams?.output_format) : task.params.output_format !== 'png' || formatDisplay.isMismatch
@@ -637,8 +638,9 @@ export default function TaskCard({
               )}
               {showSize && (
                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-white/[0.04] text-xs flex-shrink-0">
-                  <span className="text-gray-400 dark:text-gray-500">尺寸</span>
-                  {sizeDisplay.isMismatch ? <ActualValueBadge value={sizeDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{sizeDisplay.displayValue}</span>}
+                  <span className="text-gray-400 dark:text-gray-500">{hasTargetRatio ? '比例' : '尺寸'}</span>
+                  {hasTargetRatio && sizeDisplay.isMismatch && <span>{sizeDisplay.requestedValue}</span>}
+                  {sizeDisplay.isMismatch ? <ActualValueBadge value={sizeDisplay.displayValue} className="px-1 rounded-sm" /> : <span className="text-gray-600 dark:text-gray-300">{hasTargetRatio ? sizeDisplay.requestedValue : sizeDisplay.displayValue}</span>}
                 </span>
               )}
               {showFormat && (

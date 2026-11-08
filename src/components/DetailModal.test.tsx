@@ -75,6 +75,49 @@ function loadImage(image: HTMLImageElement, width: number, height: number) {
 }
 
 describe('详情原图尺寸与比例', () => {
+  it.each([[1672, 941, false], [1536, 1024, true]])('目标比例与原图 %s×%s 分开展示，微小规整误差不标黄', async (width, height, mismatch) => {
+    task.params = { ...DEFAULT_PARAMS, size: '1536x864', imageAspectRatio: '16:9' }
+    task.imageParameterMode = 'composition'
+    const { container, image } = await renderDetail()
+    loadImage(image, Number(width), Number(height))
+    const card = (label: string) => [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement
+    expect(card('目标比例')?.textContent).toContain('16:9')
+    expect(Boolean(card('目标比例')?.querySelector('.text-yellow-800'))).toBe(mismatch)
+    if (!mismatch) expect(card('目标比例')?.textContent).not.toContain('≈')
+    expect(card('实际尺寸')?.textContent).toContain(`${width}x${height}`)
+    expect(card('实际尺寸')?.querySelector('.text-yellow-800')).toBeNull()
+    expect(container.textContent).toContain('实际分辨率由模型决定')
+    expect(container.textContent).not.toContain('黄色值表示与参考尺寸不同')
+    expect(retryTask).not.toHaveBeenCalled()
+  })
+
+  it('原生模式将尺寸和格式差异留在参数旁，不重复显示警告块', async () => {
+    mocks.imageDataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    task.imageParameterMode = 'native'
+    task.params = { ...DEFAULT_PARAMS, size: '3840x1648', output_format: 'webp' }
+    task.actualParams = { size: '3840x1648', output_format: 'webp' }
+    const { container, image } = await renderDetail()
+    loadImage(image, 1536, 1024)
+    const card = (label: string) => [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement
+    expect(card('尺寸')?.textContent).toContain('3840x1648|1536x1024')
+    expect(card('尺寸')?.querySelector('.text-yellow-800')?.textContent).toBe('1536x1024')
+    expect(card('格式')?.querySelector('.text-yellow-800')?.textContent).toBe('png')
+    expect(container.textContent).not.toContain('已生成，参数与设置不符')
+    expect(container.querySelector('[aria-label="图片比例核对"]')).toBeNull()
+    expect(retryTask).not.toHaveBeenCalled()
+  })
+
+  it('兼容模式保留尺寸参考值和黄色实际值，并说明没有发送精确像素', async () => {
+    task.imageParameterMode = 'composition'
+    task.params.size = '1920x816'
+    const { container, image } = await renderDetail()
+    loadImage(image, 1914, 822)
+    const card = [...container.querySelectorAll('span')].find((span) => span.textContent === '尺寸（构图参考）')?.parentElement
+    expect(card?.textContent).toContain('1920x816|1914x822')
+    expect(card?.querySelector('.text-yellow-800')?.textContent).toBe('1914x822')
+    expect(container.textContent).toContain('未发送精确像素')
+  })
+
   it('按任务快照说明兼容模式，不把隐藏格式与质量当成参数失败', async () => {
     task.imageParameterMode = 'composition'
     task.params.output_format = 'webp'
@@ -89,7 +132,7 @@ describe('详情原图尺寸与比例', () => {
     task.params.output_format = 'webp'
     task.actualParams = { output_format: 'webp' }
     const { container } = await renderDetail()
-    expect(container.querySelector('[aria-label="当前图片参数核对"]')?.textContent).toContain('格式：设置 webp，返回 png')
+    expect([...container.querySelectorAll('span')].find((span) => span.textContent === '格式')?.parentElement?.querySelector('.text-yellow-800')?.textContent).toBe('png')
     expect(task.actualParams.output_format).toBe('webp')
   })
 
@@ -98,10 +141,11 @@ describe('详情原图尺寸与比例', () => {
     task.params.output_format = 'webp'
     task.actualParams = { quality: 'low', output_format: 'png', size: '1440x2560' }
     const { container } = await renderDetail()
-    const notice = container.querySelector('[aria-label="当前图片参数核对"]')!
-    expect(notice.textContent).toContain('已生成，参数与设置不符')
-    expect(notice.textContent).toContain('质量回显：设置 high，返回 low')
-    expect(notice.textContent).toContain('格式：设置 webp，返回 png')
+    const card = (label: string) => [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement
+    expect(card('质量')?.textContent).toContain('high|low')
+    expect(card('质量')?.querySelector('.text-yellow-800')?.textContent).toBe('low')
+    expect(card('格式')?.textContent).toContain('webp|png')
+    expect(card('格式')?.querySelector('.text-yellow-800')?.textContent).toBe('png')
     expect(container.querySelector('img[data-image-id="output"]')).not.toBeNull()
     expect(retryTask).not.toHaveBeenCalled()
   })
@@ -111,7 +155,7 @@ describe('详情原图尺寸与比例', () => {
     task.actualParams = { quality: 'low', output_format: 'jpeg' }
     const { container } = await renderDetail()
     const notice = container.querySelector('[aria-label="当前图片参数核对"]')!
-    expect(notice.textContent).toContain('部分参数未验证')
+    expect(notice.textContent).toContain('未验证：')
     expect(notice.textContent).not.toContain('返回 low')
     expect(notice.textContent).not.toContain('返回 jpeg')
   })
@@ -119,7 +163,7 @@ describe('详情原图尺寸与比例', () => {
   it('同宽高比的错误像素仍标记参数不符', async () => {
     const { container, image } = await renderDetail()
     loadImage(image, 720, 1280)
-    expect(container.querySelector('[aria-label="当前图片参数核对"]')?.textContent).toContain('尺寸：设置 1440x2560，返回 720x1280')
+    expect([...container.querySelectorAll('span')].find((span) => span.textContent === '尺寸')?.parentElement?.querySelector('.text-yellow-800')?.textContent).toBe('720x1280')
   })
 
   it.each(['done', 'running', 'error'] as const)('部分失败 %s 保留原图，按原槽位重试且运行时禁用重复提交', async (status) => {
@@ -233,7 +277,8 @@ describe('详情原图尺寸与比例', () => {
     const sizeCard = [...container.querySelectorAll('span')].find((span) => span.textContent === '尺寸')?.parentElement
     expect(sizeCard?.textContent).toContain('1440x2560')
     expect(sizeCard?.textContent).toContain('1672x941')
-    expect(container.querySelector('[aria-label="图片比例核对"]')?.textContent).toBe('返回原图的比例与请求不符：请求 1440x2560，实际 1672×941。')
+    expect(sizeCard?.querySelector('.text-yellow-800')?.textContent).toBe('1672x941')
+    expect(container.querySelector('[aria-label="图片比例核对"]')).toBeNull()
     expect(task.actualParams?.size).toBe('1440x2560')
     expect(task.params.size).toBe('1440x2560')
   })
@@ -265,10 +310,34 @@ describe('详情原图尺寸与比例', () => {
     task.actualParams = { quality: 'medium', size: '1920x1080' }
     const { container, image } = await renderDetail()
     loadImage(image, 1024, 1024)
-    const notice = container.querySelector('[aria-label="当前图片参数核对"]')!
-    expect(notice.textContent).toContain('已生成，参数与设置不符')
-    expect(notice.textContent).toContain('比例：设置 16:9，返回 1:1')
+    const ratio = [...container.querySelectorAll('span')].find((span) => span.textContent === '比例')?.parentElement
+    expect(ratio?.textContent).toContain('16:9|1:1')
+    expect(ratio?.querySelector('.text-yellow-800')?.textContent).toBe('1:1')
     expect(retryTask).not.toHaveBeenCalled()
+  })
+
+  it('Grok 档位不符在对应参数旁标黄，缺少质量回显明确未验证', async () => {
+    task.apiProvider = 'grok'
+    task.apiModel = 'grok-imagine-image-2.0'
+    task.imageParameterMode = 'native'
+    task.params = { ...DEFAULT_PARAMS, resolution: '2k', quality: 'medium' }
+    task.actualParams = { resolution: '1k' }
+    const { container } = await renderDetail()
+    const card = (label: string) => [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement
+    expect(card('分辨率档位')?.textContent).toContain('2K|1K')
+    expect(card('分辨率档位')?.querySelector('.text-yellow-800')?.textContent).toBe('1K')
+    expect(card('质量')?.textContent).toContain('medium未验证')
+    expect(card('质量')?.querySelector('.text-yellow-800')).toBeNull()
+  })
+
+  it('压缩率差异保留在对应参数旁，不被移除汇总提示时遗漏', async () => {
+    task.params.output_format = 'webp'
+    task.params.output_compression = 80
+    task.actualParams = { output_format: 'webp', output_compression: 60 }
+    const { container } = await renderDetail()
+    const card = [...container.querySelectorAll('span')].find((span) => span.textContent === '压缩率')?.parentElement
+    expect(card?.textContent).toContain('80|60')
+    expect(card?.querySelector('.text-yellow-800')?.textContent).toBe('60')
   })
 
   it('按当前槽位显示排队、接口传输和本地保存时间，旧任务不伪造耗时', async () => {

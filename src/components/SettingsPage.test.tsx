@@ -84,6 +84,12 @@ function chooseProvider(container: HTMLElement, label: string) {
 }
 
 describe('配置页的生图类型选择', () => {
+  it('本站 CLI 开关说明与目标比例生成逻辑一致', () => {
+    const container = renderSettings()
+    expect(container.textContent).toContain('无论开关状态，本站均按所选目标比例约束整张画布')
+    expect(container.textContent).not.toContain('不自动拼接构图比例')
+  })
+
   it('图片配置只展示 Images，旧 Responses 保存时使用图像工具模型并保留 Agent 副本', () => {
     const legacy = { ...site, apiKey: 'fixture', apiMode: 'responses' as const, model: 'text-model', selectedModel: 'text-model', imageGenerationModel: 'gpt-image-2.6-flare' }
     mocks.state.settings = normalizeSettings({ profiles: [legacy], agentProfiles: [legacy], agentTextProfileId: legacy.id })

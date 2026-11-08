@@ -8,6 +8,9 @@ import { DEFAULT_PARAMS } from '../../types'
 import { createDefaultOpenAIProfile } from '../../lib/apiProfiles'
 import InputParamsPanel from './inputParamsPanel'
 
+const mode = vi.hoisted(() => ({ IS_SITE_MODE: true }))
+vi.mock('../../lib/siteMode', () => mode)
+
 vi.mock('../Select', () => ({
   default: ({ prefix, value, onChange, options, disabled }: { prefix?: React.ReactNode; value: string; onChange: (value: string) => void; options: Array<{ label: string; value: string; disabled?: boolean }>; disabled?: boolean }) => <label>{prefix}<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></label>,
 }))
@@ -51,14 +54,23 @@ function control(container: HTMLElement, label: string) {
 }
 
 describe('参数能力展示', () => {
-  it('原生模式说明不拼接比例和上游执行限制，兼容模式明确不能保证像素', () => {
+  it('站点在 CLI 开关两种状态均说明目标比例和实际尺寸核对', () => {
     const value = props('openai')
-    expect(markup(value).textContent).toContain('不自动向提示词追加比例')
-    expect(markup(value).textContent).toContain('优先使用 PNG')
-    value.activeProfile.codexCli = true
-    const compatible = markup(value)
-    expect(compatible.textContent).toContain('构图比例仅作提示词引导')
-    expect(compatible.textContent).not.toContain('不自动向提示词追加比例')
+    for (const codexCli of [false, true]) {
+      value.activeProfile.codexCli = codexCli
+      const container = markup(value)
+      expect(container.textContent).toContain('实际分辨率由模型决定')
+      expect(container.textContent).toContain('偏差超过 1%')
+      expect(container.textContent).not.toContain('不自动向提示词追加比例')
+      expect([...container.querySelectorAll('button')].some((button) => button.textContent === '比例auto')).toBe(true)
+    }
+  })
+
+  it('外部原生模式保留像素参数说明', () => {
+    mode.IS_SITE_MODE = false
+    try {
+      expect(markup(props('openai')).textContent).toContain('不自动向提示词追加比例')
+    } finally { mode.IS_SITE_MODE = true }
   })
 
   it('原生 2.6 可用复杂度，其他通道保留但禁用', () => {

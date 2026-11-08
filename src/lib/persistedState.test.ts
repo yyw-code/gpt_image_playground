@@ -8,6 +8,17 @@ import { createPersistedState, mergePersistedAgentConversations, migratePersiste
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,image-a' }
 const collectionA: FavoriteCollection = { id: 'collection-a', name: '收藏夹 A', createdAt: 1, updatedAt: 1 }
 
+it('重载后保留画廊和 Agent 的独立比例，并丢弃不合法的导入值', () => {
+  const restored = normalizePersistedState({
+    galleryParams: { ...DEFAULT_PARAMS, size: '1280x544', imageAspectRatio: '21:9' },
+    agentParams: { ...DEFAULT_PARAMS, size: '864x1536', imageAspectRatio: '9:16' },
+  }, fallback(), 1)!.state
+  expect(restored.galleryParams?.imageAspectRatio).toBe('21:9')
+  expect(restored.agentParams?.imageAspectRatio).toBe('9:16')
+  expect(normalizePersistedState({ params: { ...DEFAULT_PARAMS, imageAspectRatio: 'bad' } }, fallback(), 1)!.state.params).not.toHaveProperty('imageAspectRatio')
+  expect(normalizePersistedState({ params: DEFAULT_PARAMS }, fallback(), 1)!.state.params).not.toHaveProperty('imageAspectRatio')
+})
+
 function conversation(patch: Partial<AgentConversation> = {}): AgentConversation {
   return {
     id: 'conversation-a',

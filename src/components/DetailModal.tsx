@@ -6,7 +6,7 @@ import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { useTooltip } from '../hooks/useTooltip'
 import { ensureImageCached, getCachedImage } from '../lib/imageCache'
-import { formatImageRatio, getImageAspectRatioWarning } from '../lib/size'
+import { formatImageRatio } from '../lib/size'
 import { ActualValueBadge, DetailParamValue, getTaskImageActualParams } from '../lib/paramDisplay'
 import { getBase64ImageFormat } from '../lib/imageApiShared'
 import ImageParameterNotice from './ImageParameterNotice'
@@ -22,7 +22,7 @@ import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashI
 import ViewportTooltip from './ViewportTooltip'
 import { CommentBadge } from './CommentMarks'
 
-/** 展示成功原图、逐图参数核对、下载与单张补图；参数差异不丢弃结果，接口等待含传输时间。 */
+/** 展示任务和逐图实际参数；新任务分开展示目标比例与原图像素，旧任务沿用原核对基准。 */
 export default function DetailModal() {
   const tasks = useStore((s) => s.tasks)
   const detailTaskId = useStore((s) => s.detailTaskId)
@@ -236,7 +236,6 @@ export default function DetailModal() {
     ...(currentImageSize ? { size: currentImageSize.replace('×', 'x') } : {}),
     ...(currentImageFormat ? { output_format: currentImageFormat } : {}),
   }
-  const aspectRatioWarning = task.apiProvider === 'grok' ? '' : getImageAspectRatioWarning(task.params.size, currentImageSize)
   const currentRevisedPrompt = currentOutputImageId ? task.revisedPromptByImage?.[currentOutputImageId]?.trim() : ''
   // 将 @图N 等 mention 标记和透明背景追加提示词都按实际请求内容比较，
   // 避免仅由本地请求预处理导致的不一致被当作“API 改写”。
@@ -992,9 +991,6 @@ export default function DetailModal() {
             <h3 className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
               参数配置
             </h3>
-            {aspectRatioWarning && (
-              <p role="status" aria-label="图片比例核对" className="mb-2 text-xs text-amber-600 dark:text-amber-400">{aspectRatioWarning}</p>
-            )}
             {showSourceInfo && (
               <div className="mb-2 min-w-0 overflow-hidden rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-white/[0.03]">
                 <span className="text-gray-400 dark:text-gray-500">来源</span>
@@ -1006,18 +1002,27 @@ export default function DetailModal() {
               </div>
             )}
             <div className="grid grid-cols-2 gap-2 text-xs mb-4 min-w-0">
+              {!isGrok && task.params.imageAspectRatio !== undefined && (
+                <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
+                  <span className="text-gray-400 dark:text-gray-500">目标比例</span>
+                  <br />
+                  <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
+                    <DetailParamValue task={task} paramKey="imageAspectRatio" className="font-medium" actualParams={currentActualParams} />
+                  </div>
+                </div>
+              )}
               <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
-                <span className="text-gray-400 dark:text-gray-500">{isGrok ? '分辨率档位' : '尺寸'}</span>
+                <span className="text-gray-400 dark:text-gray-500">{isGrok ? '分辨率档位' : task.params.imageAspectRatio !== undefined ? '实际尺寸' : task.imageParameterMode === 'composition' ? '尺寸（构图参考）' : '尺寸'}</span>
                 <br />
                 <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
-                  {isGrok ? <span>{task.params.resolution?.toUpperCase() ?? '1K'}</span> : <DetailParamValue task={task} paramKey="size" className="font-medium" actualParams={currentActualParams} />}
+                  {isGrok && !task.params.resolution ? <span>1K</span> : <DetailParamValue task={task} paramKey={isGrok ? 'resolution' : 'size'} className="font-medium" actualParams={currentActualParams} />}
                 </div>
               </div>
               <div className="bg-gray-50 dark:bg-white/[0.03] rounded-lg px-3 py-2 min-w-0 overflow-hidden">
                 <span className="text-gray-400 dark:text-gray-500">{isGrok ? '比例' : '质量'}</span>
                 <br />
                 <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
-                  {isGrok ? <span>{task.params.aspect_ratio ?? '1:1'}</span> : <DetailParamValue task={task} paramKey="quality" className="font-medium" actualParams={currentActualParams} />}
+                  {isGrok && !task.params.aspect_ratio ? <span>1:1</span> : <DetailParamValue task={task} paramKey={isGrok ? 'aspect_ratio' : 'quality'} className="font-medium" actualParams={currentActualParams} />}
                 </div>
               </div>
               {isGrok && task.apiModel === 'grok-imagine-image-2.0' && (
@@ -1064,7 +1069,7 @@ export default function DetailModal() {
                   <span className="text-gray-400 dark:text-gray-500">压缩率</span>
                   <br />
                   <div className="mt-0.5 overflow-x-auto hide-scrollbar whitespace-nowrap mask-edge-r pr-2">
-                    <span className="font-medium text-gray-700 dark:text-gray-300">{outputCompressionText}</span>
+                    {task.params.output_compression == null ? <span className="font-medium text-gray-700 dark:text-gray-300">{outputCompressionText}</span> : <DetailParamValue task={task} paramKey="output_compression" className="font-medium" actualParams={currentActualParams} />}
                   </div>
                 </div>
               )}

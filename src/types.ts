@@ -202,6 +202,8 @@ export interface TaskParams {
   resolution?: '1k' | '2k'
   /** Grok 原生宽高比，与 GPT 的像素尺寸分别保存。 */
   aspect_ratio?: string
+  /** ChatGPT/兼容通道的目标画布比例；与建议请求像素分开保存，旧任务缺省时从 size 恢复。 */
+  imageAspectRatio?: string
   size: string
   quality: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** GPT Image 2.6 原生 Images 构图规划强度；缺省时不发送，由接口决定。 */

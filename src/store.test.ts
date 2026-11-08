@@ -799,6 +799,21 @@ describe('aspect ratio revised prompt handling', () => {
     expect(saved.actualParams?.quality).toBe('medium')
   })
 
+  it('保存独立目标比例并清理本地画布尾注，不触发提示词被改写的误报', async () => {
+    store.useStore.setState({ params: { ...DEFAULT_PARAMS, size: '1280x544', imageAspectRatio: '21:9' } })
+    vi.mocked(callImageApi).mockImplementationOnce(async (opts) => ({
+      images: ['data:image/png;base64,1915x821'], actualParams: {}, actualParamsList: [{}],
+      revisedPrompts: [`${opts.prompt}\n\nThe entire output image canvas must have exactly a 21:9 width-to-height aspect ratio, landscape orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.`],
+    }))
+    await store.submitTask()
+    await vi.waitFor(() => expect(store.useStore.getState().tasks[0]?.status).toBe('done'))
+    const saved = store.useStore.getState().tasks[0]
+    expect(saved.params.imageAspectRatio).toBe('21:9')
+    expect(vi.mocked(callImageApi).mock.calls[0][0].params.imageAspectRatio).toBe('21:9')
+    expect(saved.revisedPromptByImage?.[saved.outputImages[0]]).toBe('Draw a cat.')
+    expect(store.useStore.getState().setConfirmDialog).not.toHaveBeenCalled()
+  })
+
   it('removes the old Codex size prefix together with the new composition suffix', async () => {
     const codexProfile = { ...profile, codexCli: true }
     store.useStore.setState({ settings: normalizeSettings({ profiles: [codexProfile], activeProfileId: profile.id }) })

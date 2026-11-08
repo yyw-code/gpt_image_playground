@@ -1,5 +1,6 @@
 import type { ApiProfile, TaskParams, TaskRecord } from '../types'
-import { normalizeModelImageSize, type ImageSizeMode } from './size'
+import { getImageRatioSize, normalizeModelImageSize, type ImageSizeMode } from './size'
+import { IS_SITE_MODE } from './siteMode'
 
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2.5-sunburst'
 
@@ -54,12 +55,18 @@ export function getImageParameterMode(profile: ApiProfile): NonNullable<TaskReco
   return capabilities.nativeOutput || profile.provider === 'grok' ? 'native' : 'default'
 }
 
+/** 本站已识别的 ChatGPT 模型及兼容通道使用目标比例；不依据密钥或域名猜测上游身份。 */
+export function usesImageAspectRatio(profile: ApiProfile): boolean {
+  if (profile.provider === 'grok' || profile.provider === 'fal') return false
+  return profile.codexCli || IS_SITE_MODE && profile.provider === 'openai' && getImageParameterCapabilities(profile).sizeMode !== 'auto'
+}
+
 /** 只组装当前通道支持的原生字段；画廊和 Agent 发送前复用，防止隐藏参数残留。 */
 export function getImageRequestParameters(params: TaskParams, profile: ApiProfile): Partial<TaskParams> {
   const capabilities = getImageParameterCapabilities(profile)
   if (!capabilities.nativeOutput) return {}
   return {
-    size: normalizeModelImageSize(params.size, capabilities.sizeMode),
+    size: normalizeModelImageSize(usesImageAspectRatio(profile) ? getImageRatioSize(params) : params.size, capabilities.sizeMode),
     quality: capabilities.qualities.includes(params.quality) ? params.quality : 'high',
     output_format: params.output_format,
     moderation: params.moderation,

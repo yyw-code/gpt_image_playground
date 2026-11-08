@@ -1,7 +1,7 @@
 import { DEFAULT_PARAMS, type AppSettings, type TaskParams } from '../types'
 import { getActiveApiProfile, isOpenAICompatibleProvider } from './apiProfiles'
-import { getImageParameterCapabilities } from './imageModels'
-import { normalizeImageSize, normalizeModelImageSize } from './size'
+import { getImageParameterCapabilities, usesImageAspectRatio } from './imageModels'
+import { getImageRatioSize, getRequestedImageAspectRatio, normalizeImageAspectRatio, normalizeImageSize, normalizeModelImageSize } from './size'
 import { getGrokAspectRatios, normalizeGrokResolution } from './grokImage'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
@@ -28,6 +28,7 @@ export function normalizeParamsForSettings(
     n: Math.min(outputImageLimit, Math.max(1, Number.isFinite(params.n) ? Math.trunc(params.n) : 1)),
   }
   if (!capabilities.complexity || !['low', 'medium', 'high'].includes(params.complexity ?? '')) delete nextParams.complexity
+  if (!usesImageAspectRatio(activeProfile)) delete nextParams.imageAspectRatio
 
   if (activeProfile.provider === 'grok') {
     return {
@@ -55,6 +56,13 @@ export function normalizeParamsForSettings(
   }
 
   if (activeProfile.provider === 'openai') nextParams.size = normalizeModelImageSize(params.size, capabilities.sizeMode)
+  if (usesImageAspectRatio(activeProfile)) {
+    nextParams.imageAspectRatio = getRequestedImageAspectRatio(params)
+    nextParams.size = getImageRatioSize(nextParams)
+  } else {
+    // 切换为原生像素或 Grok 配置时，不把 ChatGPT 的比例快照带入下一次请求。
+    delete nextParams.imageAspectRatio
+  }
   if (!capabilities.qualities.includes(nextParams.quality)) {
     nextParams.quality = capabilities.qualities.includes('high') ? 'high' : 'auto'
   }
@@ -89,10 +97,11 @@ export function getImageSubmissionError(params: TaskParams, settings: AppSetting
   if (!Number.isInteger(params.n) || params.n < 1 || params.n > getOutputImageLimitForSettings(settings) || params.n * promptCount > 10) return '一次提交最多生成 10 张图片，请调整提示词条数或每条张数。'
   const profile = getActiveApiProfile(settings)
   const capabilities = getImageParameterCapabilities(profile)
+  if (usesImageAspectRatio(profile) && params.imageAspectRatio !== undefined && !normalizeImageAspectRatio(params.imageAspectRatio)) return '画布比例无效，请选择 1:3 至 3:1 范围内的比例。'
   if (profile.provider === 'grok') {
     if (params.aspect_ratio !== undefined && !getGrokAspectRatios(profile.model).includes(params.aspect_ratio)) return '当前 Grok 模型不支持所选比例，请重新选择。'
     if (params.resolution !== undefined && !normalizeGrokResolution(params.resolution)) return 'Grok 仅支持 1K/2K 分辨率档位，请重新选择。'
-  } else if (profile.provider === 'openai' && capabilities.sizeMode !== 'composition' && params.size !== 'auto' && normalizeModelImageSize(params.size, capabilities.sizeMode) !== params.size) {
+  } else if (profile.provider === 'openai' && !usesImageAspectRatio(profile) && capabilities.sizeMode !== 'composition' && params.size !== 'auto' && normalizeModelImageSize(params.size, capabilities.sizeMode) !== params.size) {
     return '当前模型不支持所选尺寸，请重新选择。'
   }
   if (profile.provider !== 'fal' && !capabilities.qualities.includes(params.quality)) return '当前模型或通道不支持所选质量，请重新选择。'

@@ -26,10 +26,10 @@ import {
   pickActualParams,
   PROMPT_REWRITE_GUARD_PREFIX,
 } from './imageApiShared'
-import { getImageGenerationModel, getImageRequestParameters } from './imageModels'
+import { getImageGenerationModel, getImageRequestParameters, usesImageAspectRatio } from './imageModels'
 import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
-import { appendImageAspectRatioPrompt } from './size'
+import { appendImageAspectRatioPrompt, getRequestedImageAspectRatio } from './size'
 import { IS_SITE_MODE } from './siteMode'
 import { enqueueImageRequest } from './imageRequestQueue'
 
@@ -491,11 +491,11 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile): P
   })
 }
 
-/** 获得槽位后提交 Images 请求；仅兼容模式追加构图提示，原生模式保留用户原文，超时不含排队。 */
+/** 获得槽位后提交 Images 请求；站点和兼容通道明确约束整张画布比例，超时不含排队。 */
 async function callImagesApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt: originalPrompt, params, inputImageDataUrls } = opts
-  const aspectPrompt = profile.codexCli
-    ? appendImageAspectRatioPrompt(originalPrompt, params.size)
+  const aspectPrompt = usesImageAspectRatio(profile)
+    ? appendImageAspectRatioPrompt(originalPrompt, params.size, getRequestedImageAspectRatio(params))
     : originalPrompt
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
@@ -674,10 +674,10 @@ function resolveTemplateValue(value: unknown, context: Record<string, unknown>):
   return value
 }
 
-/** 组装自定义供应商模板上下文；Codex 仅附带构图提示，模板中省略隐藏的原生参数。 */
+/** 组装自定义供应商模板上下文；兼容通道按目标比例追加提示，模板中省略隐藏的原生参数。 */
 function createCustomProviderContext(opts: CallApiOptions, profile: ApiProfile) {
-  const aspectPrompt = profile.codexCli
-    ? appendImageAspectRatioPrompt(opts.prompt, opts.params.size)
+  const aspectPrompt = usesImageAspectRatio(profile)
+    ? appendImageAspectRatioPrompt(opts.prompt, opts.params.size, getRequestedImageAspectRatio(opts.params))
     : opts.prompt
   const prompt = profile.codexCli && !opts.settings.allowPromptRewrite
     ? `${PROMPT_REWRITE_GUARD_PREFIX}\n${aspectPrompt}`
@@ -1042,11 +1042,11 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   })
 }
 
-/** 获得槽位后提交 Responses 图片工具；原生模式仅通过工具字段传尺寸，超时从实际启动开始。 */
+/** 获得槽位后提交 Responses 图片工具；站点比例同时进入提示词和建议尺寸，超时从实际启动开始。 */
 async function callResponsesImageApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
-  const requestPrompt = profile.codexCli
-    ? appendImageAspectRatioPrompt(prompt, params.size)
+  const requestPrompt = usesImageAspectRatio(profile)
+    ? appendImageAspectRatioPrompt(prompt, params.size, getRequestedImageAspectRatio(params))
     : prompt
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()

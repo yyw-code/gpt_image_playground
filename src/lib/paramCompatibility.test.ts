@@ -120,7 +120,7 @@ describe('parameter compatibility', () => {
     })
     const params = { ...DEFAULT_PARAMS, size: '1280x720', quality: 'max' as const, output_format: 'webp' as const, output_compression: 80, moderation: 'low' as const, transparent_output: true }
     expect(normalizeParamsForSettings(params, settings)).toMatchObject({
-      size: '1280x720', quality: 'auto', output_format: 'png', output_compression: null,
+      size: '1536x864', imageAspectRatio: '16:9', quality: 'auto', output_format: 'png', output_compression: null,
       moderation: 'auto', transparent_output: transparentBackgroundMethod === 'local',
     })
     expect(params).toMatchObject({ output_format: 'webp', output_compression: 80, transparent_output: true })

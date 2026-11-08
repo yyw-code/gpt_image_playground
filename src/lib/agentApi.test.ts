@@ -235,7 +235,7 @@ describe('callAgentResponsesApi', () => {
     expect(body.tools[0].quality).toBeUndefined()
     expect(body.tools[0].output_format).toBeUndefined()
     expect(body.tools[0].moderation).toBeUndefined()
-    expect(body.instructions).toContain('Composition: 1:1 aspect ratio, square canvas.')
+    expect(body.instructions).toContain('The entire output image canvas must have exactly a 1:1 width-to-height aspect ratio, square orientation. Compose the image to fill that canvas edge to edge. Do not place a differently shaped picture inside a frame or add borders.')
     expect(body.instructions).not.toContain('1024x1024 resolution')
   })
 
