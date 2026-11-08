@@ -56,7 +56,7 @@ function findPresetForSize(size: string) {
   return null
 }
 
-/** 按通道展示尺寸入口；比例模式准确保存目标比例并隐藏像素控制，原生通道保留原有像素选择。 */
+/** 按通道展示尺寸入口；比例模式准确保存目标比例并保留禁用像素入口，原生通道保留原有像素选择。 */
 export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, codexCli = false, sizeMode = 'custom', grokModel = '', grokResolution = '1k', grokAspectRatio = '1:1', onGrokSelect, ratioOnly = false, imageAspectRatio }: Props) {
   const modalRef = useRef<HTMLDivElement>(null)
   usePreventBackgroundScroll(true, modalRef)
@@ -105,7 +105,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
   // Ratio mode state
   const [tier, setTier] = useState<SizeTier>(isGrok ? grokResolution === '2k' ? '2K' : '1K' : currentPreset?.tier ?? '1K')
-  // 受限通道没有像素输入页，恢复非预设尺寸时用其原比例初始化，避免确认后变成方形。
+  // 受限通道禁用像素输入页，恢复非预设尺寸时用其原比例初始化，避免确认后变成方形。
   const [ratio, setRatio] = useState(isGrok ? grokAspectRatio : compositionOnly && currentRatio !== 'auto' ? RATIOS.some((item) => item.value === currentRatio) ? currentRatio : 'custom' : currentPreset?.ratio ?? (allowAuto ? '1:1' : '4:3'))
   const [customRatio, setCustomRatio] = useState(compositionOnly && currentRatio !== 'auto' ? currentRatio : currentParsedSize ? `${currentParsedSize.width}:${currentParsedSize.height}` : '16:9')
 
@@ -256,26 +256,26 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             >
               按比例
             </button>
-            {!compositionOnly && <button
+            <button
               disabled={customSizeDisabled}
               title={customSizeDisabled ? sizeDisabledReason : undefined}
               onClick={() => { if (!customSizeDisabled) setMode('resolution') }}
               className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${mode === 'resolution' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
             >
               自定义宽高
-            </button>}
+            </button>
           </div>
 
           <div role="region" aria-label="尺寸选项" className="h-[380px] max-h-[55vh] overflow-y-auto overscroll-contain scrollbar-thin scrollbar-thumb-gray-200 dark:scrollbar-thumb-white/10 pr-1 -mr-1 pb-2">
-            {!compositionOnly && <section className="mb-5">
+            <section className="mb-5">
               <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
               <div className="grid grid-cols-3 gap-2">
                 {TIERS.map((item) => (
-                  <button key={item} className={`${buttonClass(tier === item)} w-full disabled:opacity-40 disabled:cursor-not-allowed`} disabled={isGrok ? item === '4K' : customSizeDisabled} title={customSizeDisabled ? sizeDisabledReason : undefined} onClick={() => { if (isGrok ? item !== '4K' : !customSizeDisabled) setTier(item) }}>{item}</button>
+                  <button key={item} className={`${buttonClass(!compositionOnly && tier === item)} w-full disabled:opacity-40 disabled:cursor-not-allowed`} disabled={isGrok ? item === '4K' : customSizeDisabled} title={customSizeDisabled ? sizeDisabledReason : undefined} onClick={() => { if (isGrok ? item !== '4K' : !customSizeDisabled) setTier(item) }}>{item}</button>
                 ))}
               </div>
-            </section>}
-            {customSizeDisabled && !compositionOnly && <p className="mb-4 text-xs text-gray-500">{sizeDisabledReason}，灰色选项不可选择。</p>}
+            </section>
+            {customSizeDisabled && <p className="mb-4 text-xs text-gray-500">{sizeDisabledReason}，灰色选项不可选择。</p>}
             {fixedSizesOnly && <div className="grid grid-cols-2 gap-2">{['auto', ...FIXED_IMAGE_SIZES].map((size) => <button key={size} className={buttonClass(fixedSize === size)} onClick={() => setFixedSize(size)}>{size === 'auto' ? '自动' : size}</button>)}</div>}
             {!fixedSizesOnly && mode === 'auto' && (
               <div className="flex h-full animate-fade-in items-center justify-center pt-8 pb-4 text-center">

@@ -21,7 +21,7 @@ describe('站点目标比例发送', () => {
     const fetchMock = mockImageResponse()
     const settings = normalizeSettings({ profiles: [{ ...profile, codexCli }], activeProfileId: profile.id, allowPromptRewrite: true })
     for (const edit of [false, true]) {
-      await callImageApi({ settings, params: { ...params, n: 1, imageAspectRatio: '9:16' }, prompt, inputImageDataUrls: edit ? [referenceImage] : [] })
+      await callImageApi({ settings, params: { ...DEFAULT_PARAMS, n: 1, imageAspectRatio: '9:16' }, prompt, inputImageDataUrls: edit ? [referenceImage] : [] })
     }
     const submits = fetchMock.mock.calls.filter(([url]) => String(url).startsWith(profile.baseUrl))
     expect(submits).toHaveLength(2)
@@ -37,7 +37,7 @@ describe('站点目标比例发送', () => {
     const fetchMock = mockImageResponse()
     const responsesProfile = { ...profile, apiMode: 'responses' as const, imageGenerationModel: profile.model }
     const settings = normalizeSettings({ profiles: [responsesProfile], activeProfileId: profile.id })
-    const requested = { ...params, n: 1, imageAspectRatio: '16:9' }
+    const requested = { ...DEFAULT_PARAMS, n: 1, imageAspectRatio: '16:9' }
     await callImageApi({ settings, params: requested, prompt, inputImageDataUrls: [] })
     await callAgentResponsesApi({ settings, profile: responsesProfile, params: requested, input: prompt })
     await callBatchImageSingle({ profile: responsesProfile, params: requested, prompt, batchItemId: 'cover', referenceImageDataUrls: [referenceImage], referenceIds: ['original'], allowPromptRewrite: false })
@@ -208,5 +208,68 @@ describe('外部原生参数与兼容构图分离', () => {
       const body = JSON.parse(String((init as RequestInit).body))
       expect({ ...body, n: body.n ?? 1 }).toMatchObject({ size: '2016x864', quality: 'high', n: 3 })
     }
+  })
+})
+
+
+describe('格式与比例请求契约', () => {
+  it.each(['png', 'jpeg', 'webp'] as const)('本站已验证 Responses 组合发送真实 %s、目标比例及单次工具约束', async (output_format) => {
+    const encoded = { png: 'iVBORw0KGgo=', jpeg: '/9j/4AAQSkZJRg==', webp: 'UklGRhYAAABXRUJQVlA4TAoAAAAvAAAAAEX/I/of' }[output_format]
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ output: [{ type: 'image_generation_call', result: encoded, output_format: 'png' }] })))
+    const responsesProfile = { ...profile, apiMode: 'responses' as const, model: 'gpt-6.1-sol', imageGenerationModel: 'gpt-image-2.5-sunburst', streamImages: false }
+    const settings = normalizeSettings({ profiles: [responsesProfile], activeProfileId: profile.id, allowPromptRewrite: true })
+    for (const [imageAspectRatio, size] of [['16:9', '1536x864'], ['9:16', '864x1536']]) {
+      const requested = { ...DEFAULT_PARAMS, output_format, imageAspectRatio }
+      const result = await callImageApi({ settings, params: requested, prompt, inputImageDataUrls: [] })
+      const [url, init] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1]
+      const body = JSON.parse(String(init?.body))
+      expect(url).toBe(`${profile.baseUrl}/responses`)
+      expect(body).toMatchObject({ model: 'gpt-6.1-sol', stream: false, parallel_tool_calls: false, tool_choice: 'required' })
+      expect(body.tools).toEqual([expect.objectContaining({ type: 'image_generation', action: 'generate', model: 'gpt-image-2.5-sunburst', size, quality: 'auto', output_format })])
+      expect(body.input).toContain(`Generate exactly one image. Call the image generation tool only once.\n\n${prompt}\n\n`)
+      expect(body.input).toContain(`exactly a ${imageAspectRatio} width-to-height aspect ratio`)
+      expect(body.input).toContain('Do not place a differently shaped picture inside a frame or add borders.')
+      expect(result.images[0]).toBe(`data:image/${output_format};base64,${encoded}`)
+      expect(result.actualParamsList?.[0]?.output_format).toBe(output_format)
+      expect(requested.output_format).toBe(output_format)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('本站 Responses 失败不换路径、模型、格式或自动重发', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { message: 'quota exhausted' } }), { status: 429 }))
+    const responsesProfile = { ...profile, apiMode: 'responses' as const, model: 'gpt-6.1-sol', imageGenerationModel: 'gpt-image-2.5-sunburst', streamImages: false }
+    const settings = normalizeSettings({ profiles: [responsesProfile], activeProfileId: profile.id })
+    await expect(callImageApi({ settings, params: { ...DEFAULT_PARAMS, output_format: 'webp', imageAspectRatio: '16:9' }, prompt, inputImageDataUrls: [] })).rejects.toThrow('quota exhausted')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).tools[0].output_format).toBe('webp')
+  })
+
+  it.each(['images', 'responses'] as const)('本站 %s 阻止旧的未支持格式，生成和编辑均不发送 POST', async (apiMode) => {
+    const fetchMock = mockImageResponse()
+    const settings = normalizeSettings({ profiles: [{ ...profile, apiMode, imageGenerationModel: profile.model }], activeProfileId: profile.id })
+    for (const output_format of ['jpeg', 'webp'] as const) {
+      for (const edit of [false, true]) {
+        await expect(callImageApi({ settings, params: { ...DEFAULT_PARAMS, output_format, imageAspectRatio: '16:9' }, prompt, inputImageDataUrls: edit ? [referenceImage] : [] })).rejects.toThrow('格式不可用')
+      }
+    }
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  })
+
+  it.each(['png', 'jpeg', 'webp'] as const)('外部 Responses 原生 %s 和尺寸字段一致，文件签名覆盖错误回显', async (output_format) => {
+    mocks.siteMode.IS_SITE_MODE = false
+    const encoded = { png: 'iVBORw0KGgo=', jpeg: '/9j/4AAQSkZJRg==', webp: 'UklGRhYAAABXRUJQVlA4TAoAAAAvAAAAAEX/I/of' }[output_format]
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ output: [{ type: 'image_generation_call', result: encoded, output_format: 'png' }] })))
+    const responsesProfile = { ...profile, apiMode: 'responses' as const, model: 'gpt-6.1-sol', imageGenerationModel: profile.model }
+    const settings = normalizeSettings({ profiles: [responsesProfile], activeProfileId: profile.id })
+    for (const size of ['1536x864', '864x1536']) {
+      const result = await callImageApi({ settings, params: { ...DEFAULT_PARAMS, output_format, size }, prompt, inputImageDataUrls: [] })
+      const body = JSON.parse(String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[1]?.body))
+      expect(body.model).toBe('gpt-6.1-sol')
+      expect(body.tools[0]).toMatchObject({ model: profile.model, size, output_format })
+      expect(result.images[0]).toBe(`data:image/${output_format};base64,${encoded}`)
+      expect(result.actualParamsList?.[0]?.output_format).toBe(output_format)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

@@ -21,16 +21,20 @@ describe('model-aware size picker', () => {
     } finally { act(() => root.unmount()); vi.unstubAllGlobals() }
   })
 
-  it('站点比例模式隐藏像素档位并准确提交目标比例，重新打开不出现约等号', () => {
+  it('站点比例模式保留禁用像素档位并准确提交目标比例', () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     const container = document.createElement('div')
     const root = createRoot(container)
     const onSelect = vi.fn()
     try {
       act(() => root.render(<SizePickerModal currentSize="1280x544" imageAspectRatio="21:9" ratioOnly onSelect={onSelect} onClose={vi.fn()} />))
-      expect(container.textContent).not.toContain('基准分辨率')
-      expect(container.textContent).not.toContain('4K')
-      expect(container.textContent).not.toContain('自定义宽高')
+      for (const label of ['1K', '2K', '4K', '自定义宽高']) {
+        const button = [...container.querySelectorAll('button')].find((item) => item.textContent === label)!
+        expect(button.disabled).toBe(true)
+        expect(button.title).toContain('像素由接口决定')
+        act(() => button.click())
+      }
+      expect(onSelect).not.toHaveBeenCalled()
       expect(container.textContent).not.toContain('≈')
       act(() => [...container.querySelectorAll('button')].find((button) => button.textContent === '确定')!.click())
       expect(onSelect).toHaveBeenCalledWith(expect.any(String), '21:9')
@@ -76,14 +80,14 @@ describe('model-aware size picker', () => {
     expect(html).toContain('自定义宽高')
   })
 
-  it('shows only composition controls for a Codex connection', () => {
+  it('keeps disabled pixel controls for a Codex connection', () => {
     const html = renderToStaticMarkup(<SizePickerModal currentSize="1280x720" codexCli onSelect={vi.fn()} onClose={vi.fn()} />)
     expect(html).toContain('设置图像比例')
     expect(html).toContain('16:9')
     expect(html).not.toContain('1280x720')
-    expect(html).not.toContain('基准分辨率')
-    expect(html).not.toContain('自定义宽高')
-    expect(html).not.toContain('4K')
+    expect(html).toContain('基准分辨率')
+    expect(html).toContain('自定义宽高')
+    expect(html).toContain('4K')
     expect(html).toContain('偏差超过 1% 时标黄提示')
   })
 

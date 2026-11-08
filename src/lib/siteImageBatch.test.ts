@@ -25,7 +25,7 @@ describe('site Images target count', () => {
       : new Response(JSON.stringify({ quality: 'high', data: [{ b64_json: '/9j/4AAQSkZJRg==' }] })))
 
     const result = await callImageApi({
-      settings, prompt: 'cup', params: { ...DEFAULT_PARAMS, n, quality: 'high', size: '1536x1024' },
+      settings, prompt: 'cup', params: { ...DEFAULT_PARAMS, n, quality: 'auto', size: '1536x1024' },
       inputImageDataUrls: edit ? ['data:image/png;base64,iVBORw0KGgo='] : [],
     })
 
@@ -34,7 +34,7 @@ describe('site Images target count', () => {
     for (const [, init] of submits) {
       const body = edit ? Object.fromEntries((init?.body as FormData).entries()) : JSON.parse(String(init?.body))
       expect(body.n ?? 1).toBe(1)
-      expect(body).toMatchObject({ model: profile.model, quality: 'high', size: '1536x1024' })
+      expect(body).toMatchObject({ model: profile.model, quality: 'auto', size: '1536x1024' })
       if (edit) expect(body['image[]']).toBeInstanceOf(Blob)
     }
     expect(result.images).toHaveLength(n)

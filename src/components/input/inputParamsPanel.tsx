@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { DEFAULT_PARAMS } from '../../types'
 import type { ApiProfile, AppSettings, BatchProgress, BatchPromptMode, TaskParams } from '../../types'
 import { DEFAULT_BATCH_PROMPT_CONCURRENCY, normalizeBatchPromptConcurrency } from '../../lib/batchPrompts'
-import { getImageParameterCapabilities, usesImageAspectRatio } from '../../lib/imageModels'
+import { getImageOutputIssues, getImageParameterCapabilities, usesImageAspectRatio } from '../../lib/imageModels'
 import { isTauri } from '../../lib/platform'
 import { IS_SITE_MODE } from '../../lib/siteMode'
 import { dismissAllTooltips } from '../../lib/tooltipDismiss'
@@ -95,7 +96,7 @@ interface HintTooltipState {
   startTouch: () => void
 }
 
-/** 按供应商和通道展示参数；站点使用目标比例，外部原生通道保留像素设置，差异按原图核对。 */
+/** 按当前通道逐项展示参数能力；保留禁用候选和旧值，只有用户操作才恢复可用默认值。 */
 export default function InputParamsPanel({
   params,
   setParams,
@@ -205,9 +206,11 @@ export default function InputParamsPanel({
 }) {
   const isGrok = activeProfile.provider === 'grok'
   const capabilities = getImageParameterCapabilities(activeProfile)
+  const outputIssues = capabilities.siteRestricted ? getImageOutputIssues(params, activeProfile) : {}
+  const availableDefaults = { ...DEFAULT_PARAMS, quality: capabilities.qualities[0], output_format: capabilities.formats[0] ?? 'png', complexity: undefined }
   const ratioOnly = usesImageAspectRatio(activeProfile)
   // 全部参数保留展示，不支持的选项置灰，发送前继续按能力过滤。
-  const moreSummary = !capabilities.nativeOutput ? '接口原始格式' : [
+  const moreSummary = !capabilities.nativeOutput && !outputIssues.output_format ? '接口原始格式' : [
     ...(capabilities.complexity ? [`复杂度 ${params.complexity ?? '默认'}`] : []),
     params.output_format.toUpperCase(),
     showTransparentOutputControl
@@ -216,7 +219,7 @@ export default function InputParamsPanel({
     moderationDisabled ? null : `审核 ${params.moderation}`,
   ].filter(Boolean).join(' · ')
   const unavailableReason = '当前模型或通道不支持此参数，使用接口默认值'
-  const visibleQualityOptions = (['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map((value) => ({ label: qualityOptions.find((item) => item.value === value)?.label ?? value, value, disabled: !capabilities.qualities.includes(value) || isFalProvider && value === 'auto', disabledReason: unavailableReason }))
+  const visibleQualityOptions = (['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const).map((value) => ({ label: qualityOptions.find((item) => item.value === value)?.label ?? value, value, disabled: !capabilities.qualities.includes(value) || isFalProvider && value === 'auto', disabledReason: capabilities.qualityReason }))
   const prefix = (text: string) => <span className="mr-1.5 text-gray-400 dark:text-gray-500">{text}</span>
 
   const batchSummary = batchProgress
@@ -283,18 +286,19 @@ export default function InputParamsPanel({
             onClick={qualityHint.show}
           >
             <Select
-              value={capabilities.qualities.length === 1 ? 'auto' : isFalProvider && params.quality === 'auto' ? 'high' : params.quality}
+              value={isFalProvider && params.quality === 'auto' ? 'high' : params.quality}
               onChange={(val) => {
                 if (capabilities.qualities.includes(val as TaskParams['quality']) && !(isFalProvider && val === 'auto')) setParams({ quality: val as TaskParams['quality'] })
               }}
               options={visibleQualityOptions}
-              prefix={prefix(capabilities.qualities.length === 1 ? '质量（接口自动）' : '质量')}
+              prefix={prefix(capabilities.qualities.length === 1 && params.quality === 'auto' ? '质量（接口自动）' : '质量')}
               menuClassName="min-w-max"
               className={CHIP_CLASS}
             />
+            {outputIssues.quality && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{outputIssues.quality}</p>}
             <ButtonTooltip
-              visible={(activeProfile.codexCli || isFalProvider) && qualityHint.visible}
-              text={isFalProvider ? <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : 'Codex CLI 不支持质量参数'}
+              visible={(capabilities.qualities.length === 1 || isFalProvider) && qualityHint.visible}
+              text={isFalProvider ? <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</> : capabilities.qualityReason}
             />
           </div>
         </>
@@ -366,16 +370,17 @@ export default function InputParamsPanel({
               />
             </div>
           </div>
-          <p className="mt-1 text-xs text-gray-500">{capabilities.complexity ? '控制构图规划，与画质分开；接口默认 high，简单编辑可选择 low 以减少等待。' : unavailableReason}</p>
+          <p className="mt-1 text-xs text-gray-500">{capabilities.complexity ? '控制构图规划，与画质分开；接口默认 high，简单编辑可选择 low 以减少等待。' : capabilities.outputReason}</p>
+          {outputIssues.complexity && <p className="text-xs text-amber-600 dark:text-amber-400">{outputIssues.complexity}</p>}
         </div>
         <div className={ROW_CLASS}>
           <span className={ROW_LABEL_CLASS}>格式</span>
           <div className="w-28">
             <Select
               value={params.output_format}
-              disabled={!capabilities.nativeOutput}
+              disabled={capabilities.formats.length === 0}
               onChange={(val) => {
-                if (!capabilities.nativeOutput) return
+                if (!capabilities.formats.includes(val as TaskParams['output_format'])) return
                 setParams({
                   output_format: val as TaskParams['output_format'],
                   ...(val === 'png' ? { output_compression: null } : {}),
@@ -383,14 +388,13 @@ export default function InputParamsPanel({
                 })
               }}
               options={[
-                { label: 'PNG', value: 'png' },
-                { label: 'JPEG', value: 'jpeg' },
-                { label: 'WebP', value: 'webp' },
+                ...(['png', 'jpeg', 'webp'] as const).map((value) => ({ label: value === 'webp' ? 'WebP' : value.toUpperCase(), value, disabled: !capabilities.formats.includes(value), disabledReason: capabilities.formatReasons[value] })),
               ]}
               className={selectClass}
             />
           </div>
         </div>
+        {(outputIssues.output_format || Object.keys(capabilities.formatReasons).length > 0) && <p className={`text-xs ${outputIssues.output_format ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500'}`}>{outputIssues.output_format ?? [...new Set(Object.values(capabilities.formatReasons))].join('；')}</p>}
         <div
           className={ROW_CLASS}
           onMouseEnter={transparentOutputHint.show}
@@ -400,10 +404,10 @@ export default function InputParamsPanel({
           onTouchCancel={transparentOutputHint.hide}
           onClick={transparentOutputHint.show}
         >
-          <span className={ROW_LABEL_CLASS}>{!capabilities.nativeOutput && showTransparentOutputControl ? '本地去背景' : '透明背景'}</span>
+          <span className={ROW_LABEL_CLASS}>{activeProfile.transparentBackgroundMethod === 'local' || !capabilities.nativeOutput && showTransparentOutputControl ? '本地去背景' : '透明背景'}</span>
           <div className="w-28">
             <Select
-              value={transparentOutputEnabled ? 'on' : 'off'}
+              value={params.transparent_output ? 'on' : 'off'}
               disabled={!showTransparentOutputControl}
               onChange={(val) => {
                 if (!transparentOutputAvailable || !showTransparentOutputControl) return
@@ -422,9 +426,10 @@ export default function InputParamsPanel({
           </div>
             <ButtonTooltip
               visible={transparentOutputHint.visible}
-              text="实现方式可在设置的 API 配置中选择"
+              text={showTransparentOutputControl ? '实现方式可在设置的 API 配置中选择' : params.output_format === 'jpeg' ? 'JPEG 不支持透明背景' : capabilities.outputReason}
             />
           </div>
+        {(outputIssues.transparent_output || !showTransparentOutputControl) && <p className={`text-xs ${outputIssues.transparent_output ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500'}`}>{outputIssues.transparent_output ?? (params.output_format === 'jpeg' ? 'JPEG 不支持透明背景' : capabilities.outputReason)}</p>}
         <label
           className={ROW_CLASS}
           onMouseEnter={compressionHint.show}
@@ -452,9 +457,10 @@ export default function InputParamsPanel({
           />
           <ButtonTooltip
             visible={compressionHint.visible}
-            text={isFalProvider ? 'fal.ai 不支持压缩率参数' : '仅 JPEG 和 WebP 支持压缩率'}
+            text={!capabilities.compression ? capabilities.outputReason : '仅 JPEG 和 WebP 支持压缩率'}
           />
         </label>
+        {(outputIssues.output_compression || compressionDisabled) && <p className={`text-xs ${outputIssues.output_compression ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500'}`}>{outputIssues.output_compression ?? (!capabilities.compression ? capabilities.outputReason : 'PNG 不使用压缩率参数')}</p>}
         <div
           className={ROW_CLASS}
           onMouseEnter={moderationHint.show}
@@ -467,7 +473,7 @@ export default function InputParamsPanel({
           <span className={ROW_LABEL_CLASS}>审核</span>
           <div className="w-28">
             <Select
-              value={moderationDisabled ? 'auto' : params.moderation}
+              value={params.moderation}
               onChange={(val) => {
                 if (!moderationDisabled) setParams({ moderation: val as TaskParams['moderation'] })
               }}
@@ -484,6 +490,8 @@ export default function InputParamsPanel({
             text={unavailableReason}
           />
         </div>
+        {outputIssues.moderation && <p className="text-xs text-amber-600 dark:text-amber-400">{outputIssues.moderation}</p>}
+        {Object.keys(outputIssues).length > 0 && <button type="button" className="text-xs text-blue-600 dark:text-blue-400" onClick={() => setParams(Object.fromEntries((Object.keys(outputIssues) as Array<keyof typeof outputIssues>).map((key) => [key, availableDefaults[key]])))}>恢复可用参数</button>}
         {(!capabilities.nativeOutput || !showTransparentOutputControl || compressionDisabled || moderationDisabled) && <p className="text-xs text-gray-500">灰色参数表示当前模型、通道或格式不支持；压缩率仅适用于支持原生输出的 JPEG / WebP。</p>}
       </ParamPopoverChip>
       {showBatch && (

@@ -613,7 +613,8 @@ export function normalizeApiProfile(
     provider,
     baseUrl: provider === 'fal' ? rawBaseUrl.trim().replace(/\/+$/, '') : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
-    model: provider === 'openai' && apiMode === 'images' && typeof record.model === 'string'
+    // 显式空模型表示等待用户选择，Responses 也不能在保存时偷偷填入默认文本模型。
+    model: provider === 'openai' && typeof record.model === 'string'
       ? normalizeModelList(record.model)
       : (typeof record.model === 'string' && normalizeModelList(record.model)) || defaults.model,
     selectedModel: typeof record.selectedModel === 'string' && record.selectedModel.trim() ? record.selectedModel.trim() : undefined,
@@ -1000,7 +1001,7 @@ export function normalizeModelList(value: string) {
   return splitModelList(value).join(', ')
 }
 
-/** 仅供画廊编辑入口转换旧 Responses 配置；空工具模型保持待填写，调用方负责预置锁定。 */
+/** 仅在用户明确切换为 Images 时转换模型；空工具模型保持待填写，调用方负责预置锁定。 */
 export function convertGalleryProfileToImages(profile: ApiProfile): ApiProfile {
   if (profile.provider !== 'openai' || profile.apiMode !== 'responses') return profile
   return {
@@ -1009,6 +1010,22 @@ export function convertGalleryProfileToImages(profile: ApiProfile): ApiProfile {
     model: normalizeModelList(profile.imageGenerationModel ?? ''),
     selectedModel: undefined,
     reasoningEffort: undefined,
+  }
+}
+
+/** 显式切换画廊路径；进入 Responses 保留原图片模型并清空文本模型，要求用户自行选择，不自动调用接口。 */
+export function switchGalleryApiMode(profile: ApiProfile, apiMode: ApiMode): ApiProfile {
+  if (profile.provider !== 'openai' || profile.apiMode === apiMode) return profile
+  if (apiMode === 'images') return convertGalleryProfileToImages(profile)
+  return {
+    ...profile,
+    apiMode,
+    imageGenerationModel: resolveApiProfileModel(profile).model,
+    model: '',
+    selectedModel: undefined,
+    reasoningEffort: undefined,
+    codexCli: false,
+    streamImages: false,
   }
 }
 

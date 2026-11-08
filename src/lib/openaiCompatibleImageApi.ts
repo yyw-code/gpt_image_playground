@@ -26,7 +26,7 @@ import {
   pickActualParams,
   PROMPT_REWRITE_GUARD_PREFIX,
 } from './imageApiShared'
-import { getImageGenerationModel, getImageRequestParameters, usesImageAspectRatio } from './imageModels'
+import { getImageGenerationModel, getImageRequestParameters, supportsSiteResponsesFormats, usesImageAspectRatio } from './imageModels'
 import { apiFetch, FetchConnectError } from './platform'
 import { isEventStreamResponse, readJsonServerSentEvents } from './serverSentEvents'
 import { appendImageAspectRatioPrompt, getRequestedImageAspectRatio } from './size'
@@ -1042,7 +1042,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   })
 }
 
-/** 获得槽位后提交 Responses 图片工具；站点比例同时进入提示词和建议尺寸，超时从实际启动开始。 */
+/** 提交 Responses 图片工具；实测通道限定单次工具调用，保留目标比例，超时不自动重发。 */
 async function callResponsesImageApiImmediate(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const { prompt, params, inputImageDataUrls } = opts
   const requestPrompt = usesImageAspectRatio(profile)
@@ -1067,9 +1067,10 @@ async function callResponsesImageApiImmediate(opts: CallApiOptions, profile: Api
 
     const body: Record<string, unknown> = {
       model: profile.model,
-      input: createResponsesInput(requestPrompt, inputImageDataUrls, opts.settings.allowPromptRewrite),
+      input: createResponsesInput(supportsSiteResponsesFormats(profile) ? `Generate exactly one image. Call the image generation tool only once.\n\n${requestPrompt}` : requestPrompt, inputImageDataUrls, opts.settings.allowPromptRewrite),
       tools: [createResponsesImageTool(params, inputImageDataUrls.length > 0, profile, opts.maskDataUrl, opts.nativeTransparentBackground)],
       tool_choice: 'required',
+      ...(supportsSiteResponsesFormats(profile) ? { stream: false, parallel_tool_calls: false } : {}),
     }
     if (profile.reasoningEffort) body.reasoning = { effort: profile.reasoningEffort }
     if (profile.streamImages) {

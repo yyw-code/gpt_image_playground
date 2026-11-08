@@ -11,7 +11,7 @@ import { getSiteConnection, isSiteApiProfile } from '../lib/siteProfiles'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
   createDefaultOpenAIProfile,
-  convertGalleryProfileToImages,
+  switchGalleryApiMode,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -320,7 +320,7 @@ export default function SettingsPage() {
     const nextDraft = normalizeSettings({
       ...normalizedSettings,
       profiles: normalizedSettings.profiles.map((profile) => ({
-        ...(!isPresetProfileLocked(profile.id) && (!IS_SITE_MODE || isSiteApiProfile(profile)) ? convertGalleryProfileToImages(profile) : profile),
+        ...profile,
         // 客户端不使用代理，但保留已保存的设置，导回网页版时仍然有效
         apiProxy: IS_SITE_MODE ? profile.apiProxy : isProfileApiProxyEligible(normalizedSettings, profile) && apiProxyAvailable
           ? (apiProxyLocked || profile.apiProxy)
@@ -375,11 +375,9 @@ export default function SettingsPage() {
     }
   }, [profileTouchDragPreview])
 
-  /** 保存画廊草稿并转换可编辑的旧 Responses 配置；不改 Agent、锁定预置或外站历史配置。 */
+  /** 保存画廊草稿并保留用户明确选择的 API 路径；不自动转换历史配置，不改 Agent 或锁定预置。 */
   const commitSettings = (nextDraft: AppSettings) => {
-    const normalizedProfiles = nextDraft.profiles.map((originalProfile) => {
-      const profile = !isPresetProfileLocked(originalProfile.id) && (!IS_SITE_MODE || isSiteApiProfile(originalProfile))
-        ? convertGalleryProfileToImages(originalProfile) : originalProfile
+    const normalizedProfiles = nextDraft.profiles.map((profile) => {
       if (IS_SITE_MODE) return profile
       const nextApiProxy = isProfileApiProxyEligible(nextDraft, profile) && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false
       const shouldKeepEmptyBaseUrl = profile.provider !== 'fal' && nextApiProxy && !profile.baseUrl.trim()
@@ -1447,16 +1445,22 @@ export default function SettingsPage() {
                 <SiteKeyPicker key={activeProfile.id} profile={activeProfile} onSelect={(apiKey) => commitActiveProfilePatch({ apiKey })} />
               </div>
 
-              {/* 图片配置仅提供 Images；锁定的旧预置保留原协议并提示管理员处理。 */}
+              {/* 路径必须显式选择；旧配置保留原协议，锁定预置仍只读。 */}
               {activeProfile.provider === 'openai' && (
                 <div className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">API 接口</span>
-                  <div className="rounded-xl bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 dark:bg-white/[0.06] dark:text-gray-200">
-                    {activeProfile.apiMode === 'responses' ? '旧版 Responses 预置（已锁定）' : '直接生图（Images API）'}
-                  </div>
+                  <Select
+                    value={activeProfile.apiMode}
+                    disabled={activeProfileLocked}
+                    options={[{ label: '直接生图（Images API）', value: 'images' }, { label: '文本模型调用生图工具（Responses）', value: 'responses' }]}
+                    onChange={(value) => { if (!activeProfileLocked) updateActiveProfile(switchGalleryApiMode(activeProfile, value as ApiProfile['apiMode']), true) }}
+                    className="rounded-xl bg-black/[0.04] px-3 py-2.5 text-sm text-gray-700 dark:bg-white/[0.06] dark:text-gray-200"
+                  />
                   <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                    {activeProfile.apiMode === 'responses' ? '此预置已锁定，请联系管理员将图片配置改为 Images API。' : '图片配置直接调用图片模型；对话与 Agent 请在 Agent 配置页设置。'}
-                    {!activeProfile.model.trim() && <p role="status" className="mt-1 text-amber-600">请先选择图片模型；旧配置未指定图像工具模型时，不会沿用原文本模型。</p>}
+                    {activeProfile.apiMode === 'responses'
+                      ? `需分别选择文本模型与图片工具模型。切换到此方式会关闭 CLI 和流式。${IS_SITE_MODE ? '本站已验证 gpt-6.1-sol + gpt-image-2.5-sunburst 的 PNG/JPEG/WebP 与横竖比例，未承诺 4K。' : ''}旧任务不会随配置换路。`
+                      : IS_SITE_MODE ? '直接调用图片模型；本站当前仅开放 PNG，JPEG/WebP 保留但置灰。' : '直接调用图片模型，参数按模型与通道能力提供。'}
+                    {!activeProfile.model.trim() && <p role="status" className="mt-1 text-amber-600">{activeProfile.apiMode === 'responses' ? '请先选择文本模型；不会自动替换模型。' : '请先选择图片模型。'}</p>}
                   </div>
                 </div>
               )}

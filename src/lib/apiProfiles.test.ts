@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   convertGalleryProfileToImages,
+  switchGalleryApiMode,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
@@ -1783,5 +1784,17 @@ describe('model list', () => {
   it('returns the selected model for the active profile', () => {
     const profile = normalizeApiProfile({ id: 'p1', model: 'a,b', selectedModel: 'b' })
     expect(getActiveApiProfile({ profiles: [profile], activeProfileId: 'p1' }).model).toBe('b')
+  })
+})
+
+
+describe('显式切换画廊 API 路径', () => {
+  it('切换 Responses 时保留图片模型，要求用户明确选择文本模型', () => {
+    const original = createDefaultOpenAIProfile({ model: 'image-a, gpt-image-2.5-sunburst', selectedModel: 'gpt-image-2.5-sunburst', codexCli: true, streamImages: true })
+    const next = switchGalleryApiMode(original, 'responses')
+    expect(next).toMatchObject({ apiMode: 'responses', model: '', selectedModel: undefined, imageGenerationModel: 'gpt-image-2.5-sunburst', codexCli: false, streamImages: false })
+    expect(switchGalleryApiMode(next, 'responses')).toBe(next)
+    expect(switchGalleryApiMode({ ...next, model: 'gpt-6.1-sol' }, 'images')).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.5-sunburst' })
+    expect(original.model).toBe('image-a, gpt-image-2.5-sunburst')
   })
 })

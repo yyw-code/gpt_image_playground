@@ -89,7 +89,7 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
   )
 }
 
-/** 管理生成草稿和提交入口；站点目标比例独立于请求像素保存，兼容画廊与 Agent 配置。 */
+/** 管理工作台输入与草稿；按各参数的通道能力展示禁用态，并在提交前校验旧选值。 */
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
@@ -521,11 +521,11 @@ export default function InputBar() {
   const imageCapabilities = getImageParameterCapabilities(activeProfile)
   const inputImageLimit = isGrokProvider ? MAX_GROK_INPUT_IMAGES : MAX_INPUT_IMAGES
   const agentAutoImageCount = appMode === 'agent'
-  const moderationDisabled = isFalProvider || !imageCapabilities.nativeOutput
-  const transparentOutputAvailable = appMode === 'gallery' && !isGrokProvider && (imageCapabilities.nativeOutput || imageCapabilities.sizeMode === 'composition' && activeProfile.transparentBackgroundMethod === 'local')
+  const moderationDisabled = !imageCapabilities.moderation
+  const transparentOutputAvailable = appMode === 'gallery' && !isGrokProvider && (imageCapabilities.transparency || imageCapabilities.sizeMode !== 'auto' && activeProfile.transparentBackgroundMethod === 'local')
   const showTransparentOutputControl = transparentOutputAvailable && (params.output_format === 'png' || params.output_format === 'webp')
   const transparentOutputEnabled = transparentOutputAvailable && showTransparentOutputControl && params.transparent_output
-  const compressionDisabled = params.output_format === 'png' || isFalProvider || !imageCapabilities.nativeOutput
+  const compressionDisabled = params.output_format === 'png' || !imageCapabilities.compression
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
   const isFalTextToImage = isFalProvider && inputImages.length === 0
   const nDraftValue = Number(nInput)

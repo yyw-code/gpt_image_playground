@@ -1,6 +1,6 @@
 import { DEFAULT_PARAMS, type AppSettings, type TaskParams } from '../types'
 import { getActiveApiProfile, isOpenAICompatibleProvider } from './apiProfiles'
-import { getImageParameterCapabilities, usesImageAspectRatio } from './imageModels'
+import { getImageOutputIssues, getImageParameterCapabilities, usesImageAspectRatio } from './imageModels'
 import { getImageRatioSize, getRequestedImageAspectRatio, normalizeImageAspectRatio, normalizeImageSize, normalizeModelImageSize } from './size'
 import { getGrokAspectRatios, normalizeGrokResolution } from './grokImage'
 
@@ -13,7 +13,7 @@ export function getOutputImageLimitForSettings(settings: AppSettings) {
   return getActiveApiProfile(settings).provider === 'fal' ? MAX_FAL_OUTPUT_IMAGES : MAX_OPENAI_OUTPUT_IMAGES
 }
 
-/** 根据图片模型及通道规范参数，统一清理 OpenAI 和自定义 Codex 通道的隐藏字段。 */
+/** 规范尺寸和数量；本站不再可用的输出选值保留在草稿，由提交校验提示用户明确修正。 */
 export function normalizeParamsForSettings(
   params: TaskParams,
   settings: AppSettings,
@@ -27,7 +27,7 @@ export function normalizeParamsForSettings(
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,
     n: Math.min(outputImageLimit, Math.max(1, Number.isFinite(params.n) ? Math.trunc(params.n) : 1)),
   }
-  if (!capabilities.complexity || !['low', 'medium', 'high'].includes(params.complexity ?? '')) delete nextParams.complexity
+  if (!capabilities.siteRestricted && (!capabilities.complexity || !['low', 'medium', 'high'].includes(params.complexity ?? ''))) delete nextParams.complexity
   if (!usesImageAspectRatio(activeProfile)) delete nextParams.imageAspectRatio
 
   if (activeProfile.provider === 'grok') {
@@ -63,10 +63,10 @@ export function normalizeParamsForSettings(
     // 切换为原生像素或 Grok 配置时，不把 ChatGPT 的比例快照带入下一次请求。
     delete nextParams.imageAspectRatio
   }
-  if (!capabilities.qualities.includes(nextParams.quality)) {
+  if (!capabilities.siteRestricted && !capabilities.qualities.includes(nextParams.quality)) {
     nextParams.quality = capabilities.qualities.includes('high') ? 'high' : 'auto'
   }
-  if (!capabilities.nativeOutput) {
+  if (!capabilities.siteRestricted && !capabilities.nativeOutput) {
     nextParams.output_format = 'png'
     nextParams.output_compression = null
     nextParams.moderation = 'auto'
@@ -74,7 +74,7 @@ export function normalizeParamsForSettings(
     if (activeProfile.transparentBackgroundMethod !== 'local' || capabilities.sizeMode === 'auto') nextParams.transparent_output = false
   }
 
-  if (nextParams.output_format === 'png') {
+  if (!capabilities.siteRestricted && nextParams.output_format === 'png') {
     nextParams.output_compression = DEFAULT_PARAMS.output_compression
   }
 
@@ -97,6 +97,10 @@ export function getImageSubmissionError(params: TaskParams, settings: AppSetting
   if (!Number.isInteger(params.n) || params.n < 1 || params.n > getOutputImageLimitForSettings(settings) || params.n * promptCount > 10) return '一次提交最多生成 10 张图片，请调整提示词条数或每条张数。'
   const profile = getActiveApiProfile(settings)
   const capabilities = getImageParameterCapabilities(profile)
+  if (capabilities.siteRestricted) {
+    const outputError = Object.values(getImageOutputIssues(params, profile))[0]
+    if (outputError) return outputError
+  }
   if (usesImageAspectRatio(profile) && params.imageAspectRatio !== undefined && !normalizeImageAspectRatio(params.imageAspectRatio)) return '画布比例无效，请选择 1:3 至 3:1 范围内的比例。'
   if (profile.provider === 'grok') {
     if (params.aspect_ratio !== undefined && !getGrokAspectRatios(profile.model).includes(params.aspect_ratio)) return '当前 Grok 模型不支持所选比例，请重新选择。'

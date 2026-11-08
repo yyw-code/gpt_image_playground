@@ -1245,7 +1245,7 @@ function getCustomRecoveryProfile(settings: AppSettings, task: TaskRecord) {
   return null
 }
 
-/** 按任务工作区解析原配置；提交生成时 requireModel 禁止缺失或已移除模型回退，恢复查询允许旧记录。 */
+/** 按任务工作区解析原配置；提交时禁止模型、API 路径或已记录的图片工具模型变化，恢复查询兼容旧记录。 */
 export function getTaskApiProfile(settings: AppSettings, task: TaskRecord, requireModel = false): ApiProfile | null {
   const normalized = normalizeSettings(settings)
   if (!task.apiProfileId) return null
@@ -1254,6 +1254,8 @@ export function getTaskApiProfile(settings: AppSettings, task: TaskRecord, requi
   // 任务记录的模型仍在配置的模型列表中时，沿用任务提交时的模型
   if (!profile || requireModel && (!task.apiModel || !splitModelList(profile.model).includes(task.apiModel))) return null
   if (IS_SITE_MODE && !isSiteApiProfile(profile) || isPresetConfigOnlyEnabled() && !isPresetProfile(profile.id)) return null
+  if (requireModel && (task.apiMode !== undefined && task.apiMode !== profile.apiMode
+    || task.apiImageModel !== undefined && task.apiImageModel !== (profile.imageGenerationModel?.trim() ?? ''))) return null
   return task.apiModel ? { ...profile, model: task.apiModel } : resolveApiProfileModel(profile)
 }
 
@@ -1715,7 +1717,7 @@ export async function initStore() {
   }
 }
 
-/** 校验图片能力并快照配置归属及参数模式后提交任务，批量执行不受后续页面选择影响。 */
+/** 校验图片能力并快照配置归属、图片工具模型及参数模式后提交任务，批量执行不受后续页面选择影响。 */
 export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}, submissionState = useStore.getState()) {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileScope, reusedTaskApiProfileName, reusedTaskApiProfileMissing, reusedTaskApiModel, showToast, setConfirmDialog } =
     submissionState
@@ -1833,7 +1835,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     useStore.getState().setParams(normalizedParamPatch)
   }
 
-  /** 保存每张任务的配置和参数模式后提交；不把当前页面配置用于解释后来的历史结果。 */
+  /** 保存每张任务的配置、图片工具模型和参数模式后提交；不把当前页面配置用于解释后来的历史结果。 */
   const startTask = async (taskPrompt: string) => {
     const transparentMeta = taskParams.transparent_output && activeProfile.transparentBackgroundMethod === 'local'
       ? createTransparentOutputMeta(taskPrompt)
@@ -1848,6 +1850,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
       apiProfileName: activeProfile.name,
       apiMode: activeProfile.apiMode,
       apiModel: activeProfile.model,
+      apiImageModel: activeProfile.apiMode === 'responses' ? activeProfile.imageGenerationModel?.trim() ?? '' : undefined,
       imageParameterMode: getImageParameterMode(activeProfile),
       inputImageIds: orderedInputImages.map((i) => i.id),
       maskTargetImageId,
@@ -2755,7 +2758,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   void executeAgentRound(conversationId, newRoundId, normalizedParams, requestSettings, activeProfile, imageProfile)
 }
 
-/** 执行 Agent 轮次并记录图片参数模式；删除卡片仅取消其等待请求，停止或清空轮次则中止整轮。 */
+/** 执行 Agent 轮次并记录图片工具模型及参数模式；删除卡片仅取消其等待请求，停止或清空轮次则中止整轮。 */
 async function executeAgentRound(
   conversationId: string,
   roundId: string,
@@ -2831,7 +2834,7 @@ async function executeAgentRound(
       }))
     }
 
-    /** 创建或复用图片卡片并记录图片参数模式；轮次停止后禁止在异步恢复时重新创建记录。 */
+    /** 创建或复用图片卡片并记录图片工具模型及参数模式；轮次停止后禁止在异步恢复时重新创建记录。 */
     const ensureStreamingAgentTask = async (
       toolCallId: string,
       taskPrompt = '',
@@ -2860,6 +2863,7 @@ async function executeAgentRound(
         apiProfileName: imageProfile.name,
         apiMode: imageProfile.apiMode,
         apiModel: imageProfile.model,
+        apiImageModel: imageProfile.apiMode === 'responses' ? imageProfile.imageGenerationModel?.trim() ?? '' : undefined,
         imageParameterMode: getImageParameterMode(imageProfile),
         inputImageIds,
         maskTargetImageId: options.maskTargetImageId !== undefined ? options.maskTargetImageId : round.maskTargetImageId ?? null,
@@ -3459,6 +3463,7 @@ async function executeAgentRound(
           apiProfileName: imageProfile.name,
           apiMode: imageProfile.apiMode,
           apiModel: imageProfile.model,
+          apiImageModel: imageProfile.apiMode === 'responses' ? imageProfile.imageGenerationModel?.trim() ?? '' : undefined,
           imageParameterMode: getImageParameterMode(imageProfile),
           inputImageIds: uniqueIds([...(round?.inputImageIds ?? []), ...promptRefs.imageIds]),
           maskTargetImageId: round?.maskTargetImageId ?? null,
@@ -4192,7 +4197,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 按原编号补缺图并保留核对基准；旧记录可补齐等价比例或 Grok 缺省值，真实参数变化仍拒绝，未知结果先确认。 */
+/** 按原编号补缺图并保留原路径、图片工具模型与核对基准；旧记录可补齐等价比例或 Grok 缺省值，真实参数变化仍拒绝，未知结果先确认。 */
 export async function retryTask(task: TaskRecord, requestIndex?: number, confirmUnknown = false) {
   const { settings, tasks } = useStore.getState()
   const storedSource = tasks.find((item) => item.id === task.id)
@@ -4216,7 +4221,7 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
   }
   const activeProfile = getTaskApiProfile(settings, source, true)
   if (!activeProfile) {
-    useStore.getState().showToast('原任务的配置已不存在或原模型无法确认，请恢复原配置，或明确复用参数创建新任务。', 'error')
+    useStore.getState().showToast('原任务的配置已不存在，或 API 路径、模型已改变或无法确认，请恢复原配置，或明确复用参数创建新任务。', 'error')
     return
   }
   const preservesOutputs = Boolean(retryIndices?.length && source.outputImages.length)
@@ -4273,6 +4278,8 @@ export async function retryTask(task: TaskRecord, requestIndex?: number, confirm
     apiProfileName: activeProfile.name,
     apiMode: activeProfile.apiMode,
     apiModel: activeProfile.model,
+    // 保留旧图时不以当前工具模型追认旧结果；新一轮完整生成才建立快照。
+    apiImageModel: preservesOutputs ? source.apiImageModel : activeProfile.apiMode === 'responses' ? activeProfile.imageGenerationModel?.trim() ?? '' : undefined,
     // 历史缺少模式时继续保留未知，不能用本次补图模式追认此前结果。
     imageParameterMode: preservesOutputs ? source.imageParameterMode : imageParameterMode,
     inputImageIds: [...source.inputImageIds],

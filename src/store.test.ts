@@ -479,11 +479,11 @@ describe('task retry', () => {
       .mockImplementationOnce(() => newRequest.promise)
     vi.mocked(removeKeyedBackgroundFromDataUrl).mockImplementationOnce(() => postProcess.promise)
     useStore.setState({
-      settings: {
+      settings: normalizeSettings({
         ...useStore.getState().settings,
-        profiles: useStore.getState().settings.profiles.map((profile) => ({ ...profile, apiMode: 'responses', codexCli: false, transparentBackgroundMethod: 'local' })),
+        profiles: useStore.getState().settings.profiles.map((profile) => ({ ...profile, apiKey: 'test-key', baseUrl: 'https://api.example.com/v1', apiMode: 'responses', codexCli: false, transparentBackgroundMethod: 'local' })),
         agentProfiles: useStore.getState().settings.agentProfiles.map((profile) => ({ ...profile, apiMode: 'responses', codexCli: false, transparentBackgroundMethod: 'local' })),
-      },
+      }),
       appMode: 'gallery',
       prompt: 'prompt',
       inputImages: [],
@@ -6713,6 +6713,41 @@ describe('工作区配置与参数隔离', () => {
 })
 
 describe('任务配置固定绑定', () => {
+  it('创建 Responses 任务时持久化图片工具模型，失败重试仍沿用原快照', async () => {
+    await clearTasks()
+    const profile = createDefaultOpenAIProfile({ id: 'responses-snapshot', apiKey: 'test-key', apiMode: 'responses', model: 'gpt-6.1-sol', imageGenerationModel: 'gpt-image-2.5-sunburst' })
+    vi.mocked(callImageApi).mockReset().mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    useStore.setState({ settings: normalizeSettings({ profiles: [profile] }), tasks: [], appMode: 'gallery', prompt: 'prompt', inputImages: [], maskDraft: null, params: { ...DEFAULT_PARAMS }, reusedTaskApiProfileId: null, showToast: vi.fn() })
+    await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
+    const source = useStore.getState().tasks[0]
+    expect((await getAllTasks())[0]).toMatchObject({ apiMode: 'responses', apiModel: profile.model, apiImageModel: profile.imageGenerationModel })
+    await retryTask(source)
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
+    expect((await getAllTasks())[0]).toMatchObject({ apiMode: 'responses', apiModel: profile.model, apiImageModel: profile.imageGenerationModel })
+  })
+
+  it('旧任务补图不把当前图片工具模型追认为已保存结果的模型', async () => {
+    await clearTasks()
+    const profile = createDefaultOpenAIProfile({ id: 'legacy-responses', apiKey: 'test-key', apiMode: 'responses', model: 'gpt-6.1-sol', imageGenerationModel: 'gpt-image-2.5-sunburst' })
+    const source = task({ apiProfileId: profile.id, apiMode: 'responses', apiModel: profile.model, params: { ...DEFAULT_PARAMS, n: 2 }, outputImages: ['old-output'], outputErrors: [{ requestIndex: 1, error: 'busy' }] })
+    vi.mocked(callImageApi).mockReset().mockResolvedValueOnce({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    useStore.setState({ settings: normalizeSettings({ profiles: [profile] }), tasks: [source], showToast: vi.fn() })
+    await retryTask(source, 1)
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledOnce())
+    expect(useStore.getState().tasks[0].apiImageModel).toBeUndefined()
+    expect(useStore.getState().tasks[0].outputImages).toContain('old-output')
+  })
+
+  it('禁止历史任务随配置切换 API 路径或 Responses 图片模型', () => {
+    const profile = createDefaultOpenAIProfile({ id: 'route-bound', apiMode: 'responses', model: 'gpt-6.1-sol', imageGenerationModel: 'gpt-image-2.5-sunburst' })
+    const settings = normalizeSettings({ profiles: [profile] })
+    const source = task({ apiProfileId: profile.id, apiModel: profile.model, apiMode: 'responses', apiImageModel: profile.imageGenerationModel })
+    expect(getTaskApiProfile(settings, source, true)).toMatchObject({ apiMode: 'responses', imageGenerationModel: 'gpt-image-2.5-sunburst' })
+    expect(getTaskApiProfile(normalizeSettings({ profiles: [{ ...profile, apiMode: 'images' }] }), source, true)).toBeNull()
+    expect(getTaskApiProfile(normalizeSettings({ profiles: [{ ...profile, imageGenerationModel: 'gpt-image-2.6-flare' }] }), source, true)).toBeNull()
+  })
+
   it('原模型已移除时不回退当前选中的模型', () => {
     const profile = createDefaultOpenAIProfile({ id: 'bound', model: 'new-model', apiKey: 'test-key' })
     const settings = normalizeSettings({ profiles: [profile], activeProfileId: profile.id })

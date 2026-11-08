@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSettings } from '../types'
 import { DEFAULT_PARAMS } from '../types'
 import { callImageApi } from '../lib/api'
+import * as imageApi from '../lib/api'
 import { createDefaultOpenAIProfile, normalizeSettings } from '../lib/apiProfiles'
 import { enforcePresetConfigPolicy, setPresetConfig } from '../lib/presetConfig'
 
@@ -90,42 +91,50 @@ describe('配置页的生图类型选择', () => {
     expect(container.textContent).not.toContain('不自动拼接构图比例')
   })
 
-  it('图片配置只展示 Images，旧 Responses 保存时使用图像工具模型并保留 Agent 副本', () => {
-    const legacy = { ...site, apiKey: 'fixture', apiMode: 'responses' as const, model: 'text-model', selectedModel: 'text-model', imageGenerationModel: 'gpt-image-2.6-flare' }
+  it('旧 Responses 画廊配置保持原路径、文本模型和工具模型，不影响 Agent 副本', () => {
+    const legacy = { ...site, apiKey: 'fixture', apiMode: 'responses' as const, model: 'gpt-6.1-sol', selectedModel: 'gpt-6.1-sol', imageGenerationModel: 'gpt-image-2.5-sunburst' }
     mocks.state.settings = normalizeSettings({ profiles: [legacy], agentProfiles: [legacy], agentTextProfileId: legacy.id })
     const agentBefore = (mocks.state.settings as AppSettings).agentProfiles
     const container = renderSettings()
-    const api = field(container, 'API 接口')
-    expect(api.textContent).toContain('直接生图（Images API）')
-    expect(api.querySelector('.cursor-pointer')).toBeNull()
-    expect(container.querySelector('[aria-label="选择文本模型 ID"]')).toBeNull()
-    expect(container.querySelector<HTMLInputElement>('[aria-label="选择图片模型 ID"]')?.previousElementSibling).toHaveProperty('value', 'gpt-image-2.6-flare')
+    expect(field(container, 'API 接口').textContent).toContain('Responses')
+    expect(container.querySelector('[aria-label="选择文本模型 ID"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="选择图像工具模型"]')).not.toBeNull()
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
-    const saved = mocks.state.settings as AppSettings
-    expect(saved.profiles[0]).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.6-flare', selectedModel: undefined })
-    expect(saved.agentProfiles).toEqual(agentBefore)
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject(legacy)
+    expect((mocks.state.settings as AppSettings).agentProfiles).toEqual(agentBefore)
   })
 
-  it.each([true, false])('旧工具模型为空时保留待选择状态，不填入文本模型或默认模型，site=%s', (siteMode) => {
+  it.each([true, false])('旧 Responses 空图片工具模型保持原值，不猜测模型，site=%s', (siteMode) => {
     mocks.siteMode.IS_SITE_MODE = siteMode
     const legacy = { ...site, apiMode: 'responses' as const, model: 'text-model', imageGenerationModel: '' }
     mocks.state.settings = normalizeSettings({ profiles: [legacy] })
     const container = renderSettings()
-    expect(container.querySelector('[aria-label="选择图片模型 ID"]')?.previousElementSibling).toHaveProperty('value', '')
-    expect(container.textContent).toContain('请先选择图片模型')
+    expect(container.querySelector('[aria-label="选择图像工具模型"]')?.previousElementSibling).toHaveProperty('value', '')
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
-    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'images', model: '' })
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'responses', model: 'text-model', imageGenerationModel: '' })
   })
 
-  it('锁定的旧 Responses 预置不被转换，并提示管理员处理', () => {
+  it('锁定的 Responses 预置保留原值，路径选项不可修改', () => {
     mocks.locked = true
     const legacy = { ...site, apiMode: 'responses' as const, model: 'text-model', imageGenerationModel: 'gpt-image-2.6-flare' }
     mocks.state.settings = normalizeSettings({ profiles: [legacy] })
     const container = renderSettings()
-    expect(container.textContent).toContain('旧版 Responses 预置（已锁定）')
-    expect(container.textContent).toContain('请联系管理员')
+    const api = field(container, 'API 接口')
+    act(() => api.querySelector<HTMLElement>('.cursor-pointer')!.click())
+    expect(api.querySelector('[data-option-value]')).toBeNull()
     act(() => container.querySelector<HTMLButtonElement>('[aria-label="关闭配置编辑"]')!.click())
-    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'responses', model: 'text-model' })
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject(legacy)
+  })
+
+  it('明确选择 Responses 后要求文本模型，不自动选模型或发生成请求', () => {
+    const submit = vi.spyOn(imageApi, 'callImageApi')
+    const container = renderSettings()
+    const api = field(container, 'API 接口')
+    act(() => api.querySelector<HTMLElement>('.cursor-pointer')!.click())
+    act(() => api.querySelector<HTMLElement>('[data-option-value="responses"]')!.click())
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'responses', model: '', imageGenerationModel: 'saved-openai-model', codexCli: false, streamImages: false })
+    expect(container.textContent).toContain('请先选择文本模型')
+    expect(submit).not.toHaveBeenCalled()
   })
 
   it('保存本站配置时不转换外站历史 Responses 配置', () => {
@@ -137,7 +146,7 @@ describe('配置页的生图类型选择', () => {
     expect((mocks.state.settings as AppSettings).profiles.find((profile) => profile.id === external.id)).toEqual(external)
   })
 
-  it('切回旧 OpenAI 草稿时同样转换为 Images 并使用工具模型', () => {
+  it('切回旧 OpenAI 草稿时保留 Responses 路径和工具模型', () => {
     const settings = mocks.state.settings as AppSettings
     const profile = settings.profiles[0]
     mocks.state.settings = normalizeSettings({ ...settings, profiles: [{
@@ -147,8 +156,8 @@ describe('配置页的生图类型选择', () => {
     }] })
     const container = renderSettings()
     chooseProvider(container, 'ChatGPT')
-    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'images', model: 'gpt-image-2.6-sunburst' })
-    expect(field(container, 'API 接口').textContent).toContain('直接生图（Images API）')
+    expect((mocks.state.settings as AppSettings).profiles[0]).toMatchObject({ apiMode: 'responses', model: 'text-model', imageGenerationModel: 'gpt-image-2.6-sunburst' })
+    expect(field(container, 'API 接口').textContent).toContain('Responses')
   })
   it('使用独立设置页面，提供返回工作台入口和常驻配置列表', () => {
     const container = renderSettings(false)

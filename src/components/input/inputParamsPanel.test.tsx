@@ -3,13 +3,15 @@
 import { act, type ComponentProps } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_PARAMS } from '../../types'
 import { createDefaultOpenAIProfile } from '../../lib/apiProfiles'
 import InputParamsPanel from './inputParamsPanel'
+import { setSiteConnection } from '../../lib/siteProfiles'
 
 const mode = vi.hoisted(() => ({ IS_SITE_MODE: true }))
 vi.mock('../../lib/siteMode', () => mode)
+afterEach(() => { mode.IS_SITE_MODE = true; setSiteConnection() })
 
 vi.mock('../Select', () => ({
   default: ({ prefix, value, onChange, options, disabled }: { prefix?: React.ReactNode; value: string; onChange: (value: string) => void; options: Array<{ label: string; value: string; disabled?: boolean }>; disabled?: boolean }) => <label>{prefix}<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></label>,
@@ -74,6 +76,7 @@ describe('参数能力展示', () => {
   })
 
   it('原生 2.6 可用复杂度，其他通道保留但禁用', () => {
+    mode.IS_SITE_MODE = false
     const value = props('openai')
     value.activeProfile.model = 'gpt-image-2.6-flare'
     expect(control(markup(value), '构图复杂度').disabled).toBe(false)
@@ -118,6 +121,7 @@ describe('参数能力展示', () => {
   })
 
   it('受限通道仍可操作本地去背景，支持的质量可选择，无效质量不会写入', () => {
+    mode.IS_SITE_MODE = false
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
     const value = props('openai')
     value.activeProfile.codexCli = true
@@ -140,5 +144,52 @@ describe('参数能力展示', () => {
       act(() => { quality.value = 'high'; quality.dispatchEvent(new Event('change', { bubbles: true })) })
       expect(value.setParams).toHaveBeenCalledWith({ quality: 'high' })
     } finally { act(() => root.unmount()); vi.unstubAllGlobals() }
+  })
+})
+
+
+describe('本站禁用选项与旧草稿恢复', () => {
+  it('格式逐项置灰，强制 change 也不能写入；切回外部模式恢复选择', () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const value = props('openai')
+    setSiteConnection(value.activeProfile)
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    try {
+      act(() => root.render(<InputParamsPanel {...value} />))
+      const format = control(container, '格式')
+      expect(format.disabled).toBe(false)
+      expect(format.querySelector<HTMLOptionElement>('option[value="webp"]')!.disabled).toBe(true)
+      expect(format.querySelector<HTMLOptionElement>('option[value="jpeg"]')!.disabled).toBe(true)
+      expect(container.textContent).toContain('实际返回 PNG')
+      act(() => { format.value = 'webp'; format.dispatchEvent(new Event('change', { bubbles: true })) })
+      expect(value.setParams).not.toHaveBeenCalled()
+      mode.IS_SITE_MODE = false
+      act(() => root.render(<InputParamsPanel {...value} />))
+      expect(format.querySelector<HTMLOptionElement>('option[value="webp"]')!.disabled).toBe(false)
+      act(() => { format.value = 'webp'; format.dispatchEvent(new Event('change', { bubbles: true })) })
+      expect(value.setParams).toHaveBeenCalledWith(expect.objectContaining({ output_format: 'webp' }))
+    } finally { act(() => root.unmount()); setSiteConnection(); mode.IS_SITE_MODE = true; vi.unstubAllGlobals() }
+  })
+
+  it('旧 WebP / high / 压缩率原样展示，用户主动恢复后只更新不支持的字段', () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    const value = props('openai')
+    setSiteConnection(value.activeProfile)
+    value.params = { ...value.params, quality: 'high', output_format: 'webp', output_compression: 80, imageAspectRatio: '21:9' }
+    value.outputCompressionInput = '80'
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    try {
+      act(() => root.render(<InputParamsPanel {...value} />))
+      expect(control(container, '格式').value).toBe('webp')
+      expect(control(container, '质量').value).toBe('high')
+      expect(container.textContent).toContain('格式不可用')
+      expect(container.textContent).toContain('质量不可用')
+      expect(value.setParams).not.toHaveBeenCalled()
+      const restore = [...container.querySelectorAll('button')].find((button) => button.textContent === '恢复可用参数')!
+      act(() => restore.click())
+      expect(value.setParams).toHaveBeenCalledExactlyOnceWith({ quality: 'auto', output_format: 'png', output_compression: null })
+    } finally { act(() => root.unmount()); setSiteConnection(); vi.unstubAllGlobals() }
   })
 })
